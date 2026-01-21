@@ -815,6 +815,41 @@ namespace iris {
 			std::atomic<uint32_t> ref_count = 0;
 		};
 
+		template <typename type_t>
+		struct shared_local_object_t : shared_object_t<type_t> {
+			template <typename subtype_t>
+			static int lua_tostack(iris_lua_t lua, subtype_t&& variable) {
+				if (variable.ref) {
+					lua.native_push_variable(variable.ref);
+				} else {
+					lua.template native_push_registry_object_view<type_t>(&variable);
+				}
+
+				return 1;
+			}
+
+			template <typename subtype_t>
+			static void lua_view_initialize(iris_lua_t lua, int index, subtype_t** p) {
+				subtype_t* object = *p;
+				if (object->view_count++ == 0) {
+					iris_lua_traits_t<type_t>::type::lua_shared_acquire(iris_lua_traits_t<type_t>::type::lua_view_extract(lua, index, p));
+					object->ref = lua.get_context<iris_lua_t::ref_t>(iris_lua_t::context_stackvalue_t(index));
+				}
+			}
+
+			template <typename subtype_t>
+			static void lua_view_finalize(iris_lua_t lua, int index, subtype_t** p) {
+				subtype_t* object = *p;
+				if (--object->view_count == 0) {
+					lua.deref(std::move(object->ref));
+					iris_lua_traits_t<type_t>::type::lua_shared_release(iris_lua_traits_t<type_t>::type::lua_view_extract(lua, index, p));
+				}
+			}
+		protected:
+			uint32_t view_count = 0;
+			ref_t ref;
+		};
+
 		// requried_t is for validating parameters before actually call the C++ stub
 		// will raise a lua error if it fails
 		struct required_base_t {};

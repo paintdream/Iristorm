@@ -383,7 +383,7 @@ static void env_test(std::string title, std::string hi) {
 	printf("env_test %s - %s\n", title.c_str(), hi.c_str());
 }
 
-struct shared_object_example_t : lua_t::shared_object_t<shared_object_example_t> {
+struct shared_object_example_t : lua_t::shared_local_object_t<shared_object_example_t> {
 	static void lua_registar(lua_t lua, std::nullptr_t) {
 		lua.set_current<&shared_object_example_t::foo>("foo");
 		lua.set_current<&shared_object_example_t::other>("other");
