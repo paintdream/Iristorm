@@ -1279,11 +1279,9 @@ namespace iris {
 		iris_queue_t& operator = (iris_queue_t&& rhs) noexcept {
 			if (this != &rhs) {
 				static_cast<node_allocator_t&>(*this) = std::move(static_cast<node_allocator_t&>(rhs));
-				ring_buffer = rhs.ring_buffer;
-				push_count = rhs.push_count;
-				pop_count = rhs.pop_count;
-
-				rhs.ring_buffer = nullptr;
+				std::swap(ring_buffer, rhs.ring_buffer);
+				std::swap(push_count, rhs.push_count);
+				std::swap(pop_count, rhs.pop_count);
 			}
 
 			return *this;

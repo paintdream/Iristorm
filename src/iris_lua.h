@@ -665,8 +665,7 @@ namespace iris {
 
 			shared_ref_t& operator = (shared_ref_t&& rhs) noexcept {
 				if (this != &rhs) {
-					ptr = rhs.ptr;
-					rhs.ptr = nullptr;
+					std::swap(ptr, rhs.ptr);
 				}
 
 				return *this;
@@ -675,8 +674,7 @@ namespace iris {
 			template <typename subtype_t>
 			shared_ref_t& operator = (shared_ref_t<subtype_t>&& rhs) noexcept {
 				if (this != &rhs) {
-					ptr = rhs.ptr;
-					rhs.ptr = nullptr;
+					std::swap(ptr, rhs.ptr);
 				}
 
 				return *this;
@@ -778,12 +776,12 @@ namespace iris {
 
 			template <typename subtype_t>
 			static void lua_initialize(iris_lua_t lua, int index, subtype_t* p) {
-				static_assert(!std::is_same_v<subtype_t, subtype_t>, "Shared objects can only be initialized via views");
+				IRIS_ASSERT(false); // Shared objects can only be initialized via views
 			}
 
 			template <typename subtype_t>
 			static void lua_uninitialize(iris_lua_t lua, int index, subtype_t* p) {
-				static_assert(!std::is_same_v<subtype_t, subtype_t>, "Shared objects can only be uninitialized via views");
+				IRIS_ASSERT(false); // Shared objects can only be initialized via views
 			}
 
 			template <typename subtype_t>
@@ -2570,14 +2568,12 @@ namespace iris {
 
 		template <auto ptr, typename return_t, typename type_t, int env_count, typename... args_t>
 		static int new_object(lua_State* L) {
-			IRIS_PROFILE_SCOPE(__FUNCTION__);
 			if constexpr (sizeof...(args_t) > 0) {
 				check_required_parameters<std::remove_reference_t<args_t>...>(L, env_count, 0, false, 1, true);
 			}
 
 			static_assert(alignof(type_t) <= alignof(lua_Number), "Too large alignment for object holding.");
 			do {
-				stack_guard_t guard(L, 1);
 				size_t size;
 				if constexpr (has_lua_sizeof<type_t>::value) {
 					size = invoke_sizeof<type_t, std::tuple<cast_arg_type_t<args_t>...>>(L, env_count, std::make_index_sequence<sizeof...(args_t)>());
@@ -2588,6 +2584,8 @@ namespace iris {
 					size = sizeof(type_t);
 				}
 
+				IRIS_PROFILE_SCOPE(__FUNCTION__);
+				stack_guard_t guard(L, 1);
 				if constexpr (!is_shared_ref_t<return_t>::value) {
 					type_t* p = reinterpret_cast<type_t*>(lua_newuserdatauv(L, iris_to_alignment(size, size_mask_alignment), get_lua_uservalue_count<type_t>()));
 					auto result = invoke_create<type_t, std::tuple<cast_arg_type_t<args_t>...>>(p, L, ptr, env_count, std::make_index_sequence<sizeof...(args_t)>());
@@ -2834,8 +2832,6 @@ namespace iris {
 		// invoke a C++ function from lua stack
 		template <typename function_t, int index, typename return_t, typename tuple_t, typename... params_t>
 		static int function_invoke(lua_State* L, const function_t& function, int env_count, bool use_this, int stack_index, params_t&&... params) {
-			IRIS_PROFILE_SCOPE(__FUNCTION__);
-
 			if constexpr (index < std::tuple_size_v<tuple_t>) {
 				if constexpr (std::is_same_v<iris_lua_t, remove_cvref_t<std::tuple_element_t<index, tuple_t>>>) {
 					return function_invoke<function_t, index + 1, return_t, tuple_t>(L, function, env_count, use_this, stack_index, std::forward<params_t>(params)..., iris_lua_t(L));
@@ -2843,6 +2839,7 @@ namespace iris {
 					return function_invoke<function_t, index + 1, return_t, tuple_t>(L, function, env_count, use_this, stack_index + 1, std::forward<params_t>(params)..., get_variable<std::tuple_element_t<index, tuple_t>, true>(L, get_var_index(env_count, 0, use_this, stack_index).first));
 				}
 			} else {
+				IRIS_PROFILE_SCOPE(__FUNCTION__);
 				int top = lua_gettop(L);
 
 				if constexpr (std::is_void_v<return_t>) {

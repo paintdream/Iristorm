@@ -91,8 +91,7 @@ namespace iris {
 		iris_coroutine_t& operator = (const iris_coroutine_t& rhs) = delete;
 		iris_coroutine_t& operator = (iris_coroutine_t&& rhs) noexcept {
 			if (this != &rhs) {
-				std::swap(handle, rhs.handle);
-				rhs.handle = std::coroutine_handle<promise_type>();
+				handle = std::exchange(rhs.handle, std::coroutine_handle<promise_type>());
 			}
 
 			return *this;
