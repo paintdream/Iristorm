@@ -423,7 +423,7 @@ struct test_overload_t {
 	static void bar(int) noexcept {}
 };
 
-int main(void) {
+static void test_overload_cast(lua_t lua) {
 	constexpr auto castfoo = iris_overload_cast<void, int>(&test_overload_t::foo);
 	constexpr auto castfoo2 = iris_overload_cast<void>(&test_overload_t::foo);
 	//constexpr auto q = iris_overload_cast<void>(&test_overload_t::foo);
@@ -433,11 +433,9 @@ int main(void) {
 	constexpr auto castbar2 = iris_overload_cast<void>(&test_overload_t::bar);
 	//constexpr auto q = iris_overload_cast<void>(&test_overload_t::bar);
 	static_assert(!std::is_same_v<decltype(castbar), decltype(castbar2)>);
+}
 
-	lua_State* L = luaL_newstate();
-	luaL_openlibs(L);
-
-	lua_t lua(L);
+static void test_registry_types(lua_t lua) {
 	complex_t cpx;
 	cpx.image = 1.0;
 	cpx.real = 2.0;
@@ -509,8 +507,6 @@ int main(void) {
 	auto example_base_type = lua.make_type<example_base_t>();
 	lua.cast_type(std::move(example_base_type), example_type);
 	lua.set_global("example_t", std::move(example_type));
-	int capture = 2;
-
 	lua.set_global("refstr", "shared_string_object");
 	auto p = lua.get_global<lua_t::refview_t<std::string_view>>("refstr").value();
 	std::map<int, lua_t::refview_t<std::string_view>> vv;
@@ -518,7 +514,9 @@ int main(void) {
 	for (auto&& v : vv) {
 		lua.deref(std::move(v.second));
 	}
+}
 
+static void test_functions(lua_t lua) {
 	struct lambda {
 		lambda() {
 			printf("lambda constructor!\n");
@@ -548,6 +546,7 @@ int main(void) {
 
 	IRIS_ASSERT(lua.get_global<std::string>("fmt_string_lambda") == "hello world!");
 
+	int capture = 2;
 	lua.set_global("functor", [capture]() mutable noexcept {
 		return capture;
 	});
@@ -557,19 +556,9 @@ int main(void) {
 	lua.set_global("functor2", lambda());
 	int retcapture2 = lua.call<int>(lua.get_global<iris_lua_t::ref_t>("functor2")).value();
 	IRIS_ASSERT(retcapture2 == 3);
-	
-#if USE_LUA_COROUTINE
-	worker_t worker(1);
-	warp_t warp(worker);
-	warp_t warp2(worker);
+}
 
-	workerptr = &worker;
-	warpptr = &warp;
-	warpptr2 = &warp2;
-	worker.start();
-	warp_t::preempt_guard_t preempt_guard(warp, 0);
-#endif
-
+static void test_cross_vm(lua_t lua) {
 	lua_State* T = luaL_newstate();
 	luaL_openlibs(T);
 	lua_t target(T);
@@ -667,7 +656,9 @@ end\n\
 		fprintf(stderr, "Lua code error: %s\n", callResult2.message.c_str());
 		IRIS_ASSERT(false);
 	}
+}
 
+static void test_encode(lua_t lua) {
 	auto encode_text = lua.encode<std::string>("haha");
 	auto decode_text = lua.decode<iris_lua_t::ref_t>(std::move(encode_text)).value();
 	auto decode_textview = decode_text.as<std::string_view>(lua);
@@ -753,9 +744,11 @@ end\n\
 
 	lua.native_push_variable(1234);
 	int v = lua.native_get_variable<int>(-1);
-	lua_pop(L, 1);
+	lua.native_pop_variable(1);
 	IRIS_ASSERT(v == 1234);
+}
 
+static void test_bindings(lua_t lua) {
 	lua_t::refptr_t<example_t> example = lua.make_object<example_t>(lua.get_global<lua_t::ref_t>("example_t"), example_t());
 	example->value = 5;
 	lua.deref(std::move(example));
@@ -847,8 +840,19 @@ end\n\
 	// lua.load("a").set<&lua_error>(lua, "test");
 	IRIS_ASSERT(!lua.load("err"));
 	printf("Error message: %s\n", lua.load("err").message.c_str());
+}
 
+static void test_coroutines(lua_t lua) {
 #if USE_LUA_COROUTINE
+	worker_t worker(1);
+	warp_t warp(worker);
+	warp_t warp2(worker);
+
+	workerptr = &worker;
+	warpptr = &warp;
+	warpptr2 = &warp2;
+	worker.start();
+	warp_t::preempt_guard_t preempt_guard(warp, 0);
 
 #if LUA_VERSION_NUM <= 501
 	// lua 5.1 do not accept yield from pcall
@@ -903,8 +907,22 @@ end\n\
 
 	preempt_guard.cleanup();
 #endif
-	lua_close(L);
+}
 
+int main(void) {
+	lua_State* L = luaL_newstate();
+	luaL_openlibs(L);
+	lua_t lua(L);
+
+	test_overload_cast(lua);
+	test_registry_types(lua);
+	test_functions(lua);
+	test_cross_vm(lua);
+	test_encode(lua);
+	test_bindings(lua);
+	test_coroutines(lua);
+
+	lua_close(L);
 	IRIS_ASSERT(ref_count.load(std::memory_order_acquire) == 0);
 	return 0;
 }

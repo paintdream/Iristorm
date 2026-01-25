@@ -55,7 +55,7 @@ struct sample_tree : iris_tree_t<box> {
 	sample_tree(const box& b, uint8_t k) noexcept : iris_tree_t<box>(b, k) {}
 };
 
-box build_box_randomly() noexcept {
+static box build_box_randomly() noexcept {
 	return build_box(float3((float)rand(), (float)rand(), (float)rand()), float3((float)rand(), (float)rand(), (float)rand()));
 }
 

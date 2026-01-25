@@ -13,20 +13,20 @@ using quota_t = iris_quota_t<int, 2>;
 using quota_queue_t = iris_quota_queue_t<quota_t, warp_t>;
 static std::atomic<size_t> pending_count = 0;
 
-coroutine_t cascade(warp_t* warp) {
+static coroutine_t cascade(warp_t* warp) {
 	warp_t* w = co_await iris_switch(warp);
 	printf("Cascaded!\n");
 	co_await iris_switch(w);
 }
 
-coroutine_int_t cascade_ret(warp_t* warp) {
+static coroutine_int_t cascade_ret(warp_t* warp) {
 	warp_t* w = co_await iris_switch(warp);
 	printf("Cascaded int!\n");
 	co_await iris_switch(w);
 	co_return 1234;
 }
 
-coroutine_t example(warp_t::async_worker_t& async_worker, warp_t* warp, warp_t* warp_end, int value) {
+static coroutine_t example(warp_t::async_worker_t& async_worker, warp_t* warp, warp_t* warp_end, int value) {
 	if (warp != nullptr) {
 		IRIS_ASSERT(warp_end - warp >= 3);
 		warp_t* current = co_await iris_switch(warp);
@@ -108,13 +108,13 @@ coroutine_t example(warp_t::async_worker_t& async_worker, warp_t* warp, warp_t* 
 	}
 }
 
-coroutine_int_t example_empty() {
+static coroutine_int_t example_empty() {
 	printf("Empty finished!\n");
 	co_return 1;
 }
 
 template <typename barrier_type_t>
-coroutine_t example_barrier(warp_t::async_worker_t& async_worker, barrier_type_t& barrier, int index) {
+static coroutine_t example_barrier(warp_t::async_worker_t& async_worker, barrier_type_t& barrier, int index) {
 	printf("Example barrier %d begin running!\n", index);
 
 	co_await barrier;
