@@ -1846,6 +1846,17 @@ namespace iris {
 			return push_count;
 		}
 
+		size_t get_index(const element_t& e) const noexcept {
+			auto guard = out_fence();
+			const storage_t* p = reinterpret_cast<const storage_t*>(&e);
+			ptrdiff_t index = p - ring_buffer;
+			if (index < 0 || index >= iris_verify_cast<ptrdiff_t>(element_count)) {
+				return ~static_cast<size_t>(0); // not belong to me
+			}
+
+			return pop_count + iris_verify_cast<size_t>((size_t)index >= (pop_count % element_count) ? (size_t)index - (pop_count % element_count) : (size_t)index + element_count - (pop_count % element_count));
+		}
+
 		// why step_counter and diff_count except simple mod ?
 		// if element_count_pow_two is false (e.g. max element count = 3), the overflow of integer index (2^n) is not compatible with mod operation
 		static size_t step_counter(size_t count, ptrdiff_t delta) {
@@ -2039,6 +2050,18 @@ namespace iris {
 
 		size_t begin_index() const noexcept {
 			return pop_head->begin_index();
+		}
+
+		size_t get_index(const element_t& element) const noexcept {
+			auto guard = out_fence();
+			for (const node_t* p = pop_head; p != push_head->next; p = p->next) {
+				size_t index = p->get_index(element);
+				if (index != ~static_cast<size_t>(0)) {
+					return index;
+				}
+			}
+
+			return ~static_cast<size_t>(0);
 		}
 
 		const element_t& get(size_t index) const noexcept {

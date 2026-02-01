@@ -124,12 +124,14 @@ int main(void) {
 		}
 	});
 
-	matrix_system.iterate<entity_t, iris_component_matrix_t>([](entity_t entity, iris_component_matrix_t& matrix) {
+	matrix_system.iterate<entity_t, iris_component_matrix_t>([&](entity_t entity, iris_component_matrix_t& matrix) {
 		// initialize with identity matrix
+		IRIS_ASSERT(&matrix == &matrix_system.locate<iris_component_matrix_t>(matrix_system.locate<uint8_t>(matrix)));
 		IRIS_ASSERT(matrix.values[0][0] == 1);
 	});
 
-	matrix_system.filter<iris_component_matrix_t>(0, [](iris_component_matrix_t& matrix) {
+	matrix_system.filter<iris_component_matrix_t>(0, [&](iris_component_matrix_t& matrix) {
+		IRIS_ASSERT(&matrix == &matrix_system.locate<iris_component_matrix_t>(matrix_system.locate<uint8_t>(matrix)));
 		matrix.values[1][1] = 2;
 	});
 

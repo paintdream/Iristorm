@@ -159,6 +159,14 @@ namespace iris {
 			return entities.size();
 		}
 
+		template <typename to_component_t, typename from_component_t>
+		to_component_t& locate(const from_component_t& from_component) noexcept {
+			auto guard = read_fence();
+			size_t index = std::get<fetch_index<from_component_t>::value>(components).get_index(from_component);
+			IRIS_ASSERT(index != ~(size_t)0);
+			return std::get<fetch_index<to_component_t>::value>(components).get(index);
+		}
+
 		// get specified component of given entity
 		template <typename component_t>
 		component_t& get(entity_t entity) noexcept {
