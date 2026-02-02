@@ -1266,9 +1266,7 @@ namespace iris {
 
 		explicit iris_queue_t(const node_allocator_t& alloc, size_t init_count = 0) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : node_allocator_t(alloc), push_count(init_count), pop_count(init_count), ring_buffer(node_allocator_t::allocate(element_count)) {}
 
-		explicit iris_queue_t(size_t init_count = 0) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : push_count(init_count), pop_count(init_count), ring_buffer(node_allocator_t::allocate(element_count)) {
-			new (ring_buffer) storage_t();
-		}
+		explicit iris_queue_t(size_t init_count = 0) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : push_count(init_count), pop_count(init_count), ring_buffer(node_allocator_t::allocate(element_count)) {}
 
 		iris_queue_t(const iris_queue_t& rhs) = delete;
 		iris_queue_t(iris_queue_t&& rhs) noexcept : node_allocator_t(std::move(static_cast<node_allocator_t&>(rhs))), ring_buffer(rhs.ring_buffer), push_count(rhs.push_count), pop_count(rhs.pop_count) {
