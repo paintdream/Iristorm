@@ -1292,6 +1292,10 @@ namespace iris {
 			}
 		}
 
+		const void* get_base_address() const noexcept {
+			return ring_buffer;
+		}
+
 		template <typename input_element_t>
 		element_t* push(input_element_t&& t) noexcept(noexcept(element_t(std::forward<input_element_t>(t)))) {
 			auto in_guard = in_fence();
@@ -1327,12 +1331,14 @@ namespace iris {
 		element_t& get(size_t index) noexcept {
 			auto guard = out_fence();
 			IRIS_ASSERT(!empty()); // must checked before calling me (memory fence acquire implicited)
+			IRIS_ASSERT(index >= begin_index() && index < end_index());
 			return *reinterpret_cast<element_t*>(&ring_buffer[index % element_count]);
 		}
 
 		const element_t& get(size_t index) const noexcept {
 			auto guard = out_fence();
 			IRIS_ASSERT(!empty()); // must checked before calling me (memory fence acquire implicited)
+			IRIS_ASSERT(index >= begin_index() && index < end_index());
 			return *reinterpret_cast<const element_t*>(&ring_buffer[index % element_count]);
 		}
 
@@ -1894,7 +1900,7 @@ namespace iris {
 	}
 
 	// chain kfifos to make variant capacity.
-	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t, bool enable_memory_fence = true, template <typename...> class debug_allocator_t = allocator_t>
+	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t, bool enable_memory_fence = true, typename listener_t = void, template <typename...> class debug_allocator_t = allocator_t>
 	struct iris_queue_list_t : protected allocator_t<impl::node_t<value_t, allocator_t, enable_memory_fence>>, protected enable_in_out_fence_t<> {
 		using element_t = value_t;
 		using node_t = impl::node_t<element_t, debug_allocator_t, enable_memory_fence>;
@@ -1963,6 +1969,7 @@ namespace iris {
 			if (push_head->full()) {
 				node_t* p = node_allocator_t::allocate(1);
 				new (p) node_t(static_cast<node_allocator_t&>(*this), iterator_counter);
+
 				iterator_counter = node_t::step_counter(iterator_counter, element_count);
 				element_t* w = p->push(std::forward<input_element_t>(t));
 
@@ -1974,6 +1981,7 @@ namespace iris {
 				}
 
 				push_head = p;
+				invoke_node_insert<listener_t>(p);
 				return w;
 			} else {
 				return push_head->push(std::forward<input_element_t>(t));
@@ -1989,6 +1997,7 @@ namespace iris {
 				// full
 				node_t* p = node_allocator_t::allocate(1);
 				new (p) node_t(static_cast<node_allocator_t&>(*this), iterator_counter);
+
 				iterator_counter = node_t::step_counter(iterator_counter, element_count);
 				from = p->push(from, to);
 
@@ -2000,6 +2009,7 @@ namespace iris {
 				}
 
 				push_head = p;
+				invoke_node_insert<listener_t>(p);
 			}
 
 			return from;
@@ -2008,7 +2018,7 @@ namespace iris {
 		template <typename iterator_t>
 		iterator_t copy(iterator_t from, iterator_t to, size_t offset) noexcept(noexcept(std::declval<node_t>().push(from, to))) {
 			for (node_t* p = pop_head; p != push_head->next; p = p->next) {
-				if (p->end_index() > offset) {
+				if ((ptrdiff_t)p->end_index() - (ptrdiff_t)offset > 0) {
 					// copy from current node_t
 					iterator_t org = from;
 					from = p->copy(from, to, offset);
@@ -2026,7 +2036,7 @@ namespace iris {
 		template <typename iterator_t>
 		iterator_t move(iterator_t from, iterator_t to, size_t offset) noexcept(noexcept(std::declval<node_t>().push(from, to))) {
 			for (node_t* p = pop_head; p != push_head->next; p = p->next) {
-				if (p->end_index() > offset) {
+				if ((ptrdiff_t)p->end_index() - (ptrdiff_t)offset > 0) {
 					// move from current node_t
 					iterator_t org = from;
 					from = p->move(from, to, offset);
@@ -2040,7 +2050,6 @@ namespace iris {
 
 			return from;
 		}
-
 
 		size_t end_index() const noexcept {
 			return push_head->end_index();
@@ -2066,7 +2075,7 @@ namespace iris {
 			auto guard = out_fence();
 
 			for (const node_t* p = pop_head; p != push_head->next; p = p->next) {
-				if (p->end_index() > index) {
+				if ((ptrdiff_t)p->end_index() - (ptrdiff_t)index > 0) {
 					return p->get(index);
 				}
 			}
@@ -2077,7 +2086,7 @@ namespace iris {
 		element_t& get(size_t index) noexcept {
 			auto guard = out_fence();
 			for (node_t* p = pop_head; p != push_head->next; p = p->next) {
-				if (p->end_index() > index) {
+				if ((ptrdiff_t)p->end_index() - (ptrdiff_t)index > 0) {
 					return p->get(index);
 				}
 			}
@@ -2109,6 +2118,7 @@ namespace iris {
 				pop_head = pop_head->next;
 
 				p->~node_t();
+				invoke_node_remove<listener_t>(p);
 				node_allocator_t::deallocate(p, 1);
 				return true;
 			} else {
@@ -2243,6 +2253,7 @@ namespace iris {
 				p = p->next;
 
 				t->~node_t();
+				invoke_node_remove<listener_t>(t);
 				node_allocator_t::deallocate(t, 1);
 			}
 
@@ -2500,9 +2511,99 @@ namespace iris {
 		}
 
 	protected:
+		template <typename tag_t>
+		typename std::enable_if<std::is_void<tag_t>::value>::type invoke_node_insert(node_t* node) {}
+
+		template <typename tag_t>
+		typename std::enable_if<!std::is_void<tag_t>::value>::type invoke_node_insert(node_t* node) {
+			static_cast<tag_t*>(this)->node_insert(node);
+		}
+
+		template <typename tag_t>
+		typename std::enable_if<std::is_void<tag_t>::value>::type invoke_node_remove(node_t* node) {}
+
+		template <typename tag_t>
+		typename std::enable_if<!std::is_void<tag_t>::value>::type invoke_node_remove(node_t* node) {
+			static_cast<tag_t*>(this)->node_remove(node);
+		}
+
+	protected:
 		node_t* push_head = nullptr;
 		node_t* pop_head = nullptr; // pop_head is always prior to push_head.
 		size_t iterator_counter = 0;
+	};
+
+	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t>
+	struct iris_queue_quick_list_t : iris_queue_list_t<value_t, allocator_t, false, iris_queue_quick_list_t<value_t, allocator_t>> {
+		using base_t = iris_queue_list_t<value_t, allocator_t, false, iris_queue_quick_list_t<value_t, allocator_t>>;
+		using element_t = base_t::element_t;
+		using node_t = base_t::node_t;
+		using node_allocator_t = base_t::node_allocator_t;
+
+		// do not copy this structure, only to move
+		iris_queue_quick_list_t(const iris_queue_quick_list_t& rhs) = delete;
+		iris_queue_quick_list_t& operator = (const iris_queue_quick_list_t& rhs) = delete;
+
+		explicit iris_queue_quick_list_t(const node_allocator_t& allocator) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : base_t(allocator) {
+			node_insert(base_t::pop_head);
+		}
+
+		iris_queue_quick_list_t() noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : base_t() {
+			node_insert(base_t::pop_head);
+		}
+		
+		~iris_queue_quick_list_t() noexcept {
+			nodes.clear();
+			address_to_nodes.clear();
+		}
+
+		iris_queue_quick_list_t(iris_queue_quick_list_t&& rhs) noexcept : base_t(std::move(rhs)), nodes(std::move(rhs.nodes)), address_to_nodes(std::move(rhs.address_to_nodes)) {}
+		iris_queue_quick_list_t& operator = (iris_queue_quick_list_t&& rhs) noexcept {
+			base_t::operator = (std::move(rhs));
+			nodes = std::move(rhs.nodes);
+			address_to_nodes = std::move(rhs.address_to_nodes);
+
+			return *this;
+		}
+
+		size_t get_index(const element_t& element) const noexcept {
+			auto guard = base_t::out_fence();
+			const void* address = &element;
+			auto it = std::upper_bound(address_to_nodes.begin(), address_to_nodes.end(), iris_make_key_value(address, static_cast<node_t*>(nullptr)));
+			if (it != address_to_nodes.begin()) {
+				--it;
+				return it->second->get_index(element);
+			} else {
+				return ~static_cast<size_t>(0);
+			}
+		}
+
+		const element_t& get(size_t index) const noexcept {
+			auto guard = base_t::out_fence();
+			return nodes[(index - (base_t::pop_head->begin_index() - base_t::pop_head->begin_index() % base_t::element_count)) / base_t::element_count]->get(index);
+		}
+
+		element_t& get(size_t index) noexcept {
+			auto guard = base_t::out_fence();
+			return nodes[(index - (base_t::pop_head->begin_index() - base_t::pop_head->begin_index() % base_t::element_count)) / base_t::element_count]->get(index);
+		}
+
+		void node_insert(node_t* node) {
+			IRIS_ASSERT(iris_binary_find(address_to_nodes.begin(), address_to_nodes.end(), node->get_base_address()) == address_to_nodes.end());
+			iris_binary_insert(address_to_nodes, iris_make_key_value(node->get_base_address(), node));
+			nodes.emplace_back(node);
+		}
+
+		void node_remove(node_t* node) {
+			iris_binary_erase(address_to_nodes, node->get_base_address());
+			auto it = std::find(nodes.begin(), nodes.end(), node);
+			IRIS_ASSERT(it != nodes.end());
+			nodes.erase(it);
+		}
+
+	protected:
+		std::vector<iris_key_value_t<const void*, node_t*>> address_to_nodes;
+		std::vector<node_t*> nodes;
 	};
 
 	// crtp-based resource handle reuse pool

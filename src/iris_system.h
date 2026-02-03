@@ -116,16 +116,8 @@ namespace iris {
 			auto guard = write_fence();
 
 			auto iterator = iris_binary_find(entity_components.begin(), entity_components.end(), entity);
-			if (iterator != entity_components.end()) {
-				index_t index = iterator->second;
-				if (index == ~(index_t)0) {
-					index = iris_verify_cast<index_t>(entities.end_index());
-					replace_components<sizeof...(components_t)>(index, std::forward<elements_t>(t)...);
-					iterator->second = index;
-				} else {
-					replace_components<sizeof...(components_t)>(index, std::forward<elements_t>(t)...);
-				}
-
+			if (iterator != entity_components.end() && iterator->second != ~(index_t)0) {
+				replace_components<sizeof...(components_t)>(iterator->second, std::forward<elements_t>(t)...);
 				return true;
 			} else {
 				if (entity_components.capacity() <= entity_components.size() + 1) {
@@ -238,7 +230,14 @@ namespace iris {
 					ip->second = ~(index_t)0;
 					move_components(index, placeholder<components_t...>());
 
-					*(entities.begin() + (it - entity_components.begin())) = top_entity; // update recorded entity list
+					entities.get(index) = top_entity; // update recorded entity list
+				} else {
+					ip = iris_binary_find(ip, entity_components.end(), entity);
+					if (ip == entity_components.end() || ip->second == ~(index_t)0) {
+						return begin; // not found
+					}
+
+					ip->second = ~(index_t)0;
 				}
 
 				pop_components(placeholder<components_t...>());
@@ -290,25 +289,25 @@ namespace iris {
 		}
 
 		template <typename component_t>
-		typename std::enable_if<!std::is_same<component_t, entity_t>::value, iris_queue_list_t<component_t, allocator_t>&>::type component() noexcept {
+		typename std::enable_if<!std::is_same<component_t, entity_t>::value, iris_queue_quick_list_t<component_t, allocator_t>&>::type component() noexcept {
 			auto guard = read_fence();
 			return std::get<fetch_index<component_t>::value>(components);
 		}
 
 		template <typename component_t>
-		typename std::enable_if<std::is_same<component_t, entity_t>::value, iris_queue_list_t<component_t, allocator_t>&>::type component() noexcept {
+		typename std::enable_if<std::is_same<component_t, entity_t>::value, iris_queue_quick_list_t<component_t, allocator_t>&>::type component() noexcept {
 			auto guard = read_fence();
 			return entities;
 		}
 
 		template <typename component_t>
-		typename std::enable_if<!std::is_same<component_t, entity_t>::value, const iris_queue_list_t<component_t, allocator_t>&>::type component() const noexcept {
+		typename std::enable_if<!std::is_same<component_t, entity_t>::value, const iris_queue_quick_list_t<component_t, allocator_t>&>::type component() const noexcept {
 			auto guard = read_fence();
 			return std::get<fetch_index<component_t>::value>(components);
 		}
 
 		template <typename component_t>
-		typename std::enable_if<std::is_same<component_t, entity_t>::value, const iris_queue_list_t<component_t, allocator_t>&>::type component() const noexcept {
+		typename std::enable_if<std::is_same<component_t, entity_t>::value, const iris_queue_quick_list_t<component_t, allocator_t>&>::type component() const noexcept {
 			auto guard = read_fence();
 			return entities;
 		}
@@ -370,9 +369,9 @@ namespace iris {
 		void clear_components(placeholder<>) noexcept {}
 
 	protected:
-		std::tuple<iris_queue_list_t<components_t, allocator_t>...> components;
+		std::tuple<iris_queue_quick_list_t<components_t, allocator_t>...> components;
 		entity_components_t entity_components;
-		iris_queue_list_t<entity_t, allocator_t> entities;
+		iris_queue_quick_list_t<entity_t, allocator_t> entities;
 	};
 
 	template <typename entity_t, template <typename...> class allocator_t = iris_default_block_allocator_t>
@@ -402,7 +401,7 @@ namespace iris {
 		}
 
 	protected:
-		iris_queue_list_t<entity_t, allocator_t> free_entities;
+		iris_queue_quick_list_t<entity_t, allocator_t> free_entities;
 		entity_t max_allocated_entity = 0;
 	};
 
@@ -494,8 +493,8 @@ namespace iris {
 
 			for (size_t i = 0; i < system_infos.size(); i++) {
 				auto& system_info = system_infos[i];
-				auto iterators_begin = std::make_tuple(typename iris_queue_list_t<for_components_t, allocator_t>::iterator()...);
-				auto iterators_end = std::make_tuple(typename iris_queue_list_t<for_components_t, allocator_t>::iterator()...);
+				auto iterators_begin = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
+				auto iterators_end = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
 
 				if (match_iterators<decltype(iterators_begin), 0, for_components_t...>(iterators_begin, iterators_end, system_info)) {
 					while (std::get<0>(iterators_begin) != std::get<0>(iterators_end)) {
@@ -512,8 +511,8 @@ namespace iris {
 			auto guard = read_fence();
 			for (size_t i = 0; i < system_infos.size(); i++) {
 				auto& system_info = system_infos[i];
-				auto iterators_begin = std::make_tuple(typename iris_queue_list_t<for_components_t, allocator_t>::iterator()...);
-				auto iterators_end = std::make_tuple(typename iris_queue_list_t<for_components_t, allocator_t>::iterator()...);
+				auto iterators_begin = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
+				auto iterators_end = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
 
 				if (match_iterators<decltype(iterators_begin), 0, for_components_t...>(iterators_begin, iterators_end, system_info)) {
 					size_t total = iris_verify_cast<size_t>(std::get<0>(iterators_end) - std::get<0>(iterators_begin));
@@ -538,8 +537,8 @@ namespace iris {
 
 			for (size_t i = 0; i < system_infos.size(); i++) {
 				auto& system_info = system_infos[i];
-				auto iterators_begin = std::make_tuple(typename iris_queue_list_t<for_components_t, allocator_t>::iterator()...);
-				auto iterators_end = std::make_tuple(typename iris_queue_list_t<for_components_t, allocator_t>::iterator()...);
+				auto iterators_begin = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
+				auto iterators_end = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
 
 				if (match_iterators<decltype(iterators_begin), 0, for_components_t...>(iterators_begin, iterators_end, system_info)) {
 					auto& entity_components = *system_info.entity_components;
@@ -599,7 +598,7 @@ namespace iris {
 			size_t hash = get_type_hash<first_component_t>();
 			auto it = iris_binary_find(system_info.components.begin(), system_info.components.end(), hash);
 			if (it != system_info.components.end()) {
-				auto* list = reinterpret_cast<iris_queue_list_t<first_component_t, allocator_t>*>(it->second);
+				auto* list = reinterpret_cast<iris_queue_quick_list_t<first_component_t, allocator_t>*>(it->second);
 				std::get<i>(iterators_begin) = list->begin();
 				std::get<i>(iterators_end) = list->end();
 

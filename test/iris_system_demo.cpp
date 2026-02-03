@@ -12,7 +12,7 @@ struct iris_component_matrix_t {
 template <typename element_t>
 using block_allocator_t = iris_block_allocator_t<element_t>;
 
-struct int_interface : iris_pool_t<int_interface, iris_queue_list_t<int*>> {
+struct int_interface : iris_pool_t<int_interface, iris_queue_quick_list_t<int*>> {
 	template <typename element_t>
 	element_t acquire_element();
 
@@ -31,7 +31,7 @@ inline void int_interface::release_element<int*>(int*&& object) {
 }
 
 int main(void) {
-	iris::iris_queue_list_t<int> ql;
+	iris::iris_queue_quick_list_t<int> ql;
 	std::vector<int> vv;
 	for (int i = 0; i < 0x716; i++) {
 		vv.push_back(i);
@@ -63,7 +63,7 @@ int main(void) {
 
 	quota.release({ 1,2 });
 
-	using queue = iris_queue_list_t<int, iris_default_block_allocator_t>;
+	using queue = iris_queue_quick_list_t<int, iris_default_block_allocator_t>;
 	iris_default_block_allocator_t<int> alloc;
 	queue q(alloc);
 	q.push(1);
@@ -117,7 +117,7 @@ int main(void) {
 		matrix.values[3][0] = 0; matrix.values[3][1] = 0; matrix.values[3][2] = 0; matrix.values[3][3] = 1;
 	});
 
-	matrix_system.iterate_batch<iris_component_matrix_t>(4, [](size_t count, iris_queue_list_t<iris_component_matrix_t, block_allocator_t>::iterator it) {
+	matrix_system.iterate_batch<iris_component_matrix_t>(4, [](size_t count, iris_queue_quick_list_t<iris_component_matrix_t, block_allocator_t>::iterator it) {
 		while (count-- != 0) {
 			it->values[3][3] = 2;
 			it++;
@@ -162,7 +162,7 @@ int main(void) {
 		printf("Entity arr = %u\n", v);
 	});
 
-	systems.iterate_batch<iris_component_matrix_t>(4, [](size_t count, iris_queue_list_t<iris_component_matrix_t, block_allocator_t>::iterator it) {
+	systems.iterate_batch<iris_component_matrix_t>(4, [](size_t count, iris_queue_quick_list_t<iris_component_matrix_t, block_allocator_t>::iterator it) {
 		while (count-- != 0) {
 			IRIS_ASSERT(it->values[3][3] == 2);
 			it++;
