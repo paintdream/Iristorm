@@ -3436,7 +3436,7 @@ namespace iris {
 					return push_variable(L, nullptr);
 				}
 			} else if constexpr (is_functor<value_t>::value) {
-				return push_method<&type_t::operator ()>(L, std::forward<type_t>(variable), &type_t::operator ());
+				return push_method<&value_t::operator ()>(L, std::forward<type_t>(variable), &value_t::operator ());
 			} else {
 				// by default, force iris_lua_traits_t
 				guard.append(iris_lua_traits_t<value_t>::type::lua_tostack(iris_lua_t(L), std::forward<type_t>(variable)) - 1);
