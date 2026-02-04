@@ -435,6 +435,10 @@ static void test_overload_cast(lua_t lua) {
 	static_assert(!std::is_same_v<decltype(castbar), decltype(castbar2)>);
 }
 
+struct test_refl {
+	int operator () (int a, double b) noexcept { return 1; }
+};
+
 static void test_registry_types(lua_t lua) {
 	complex_t cpx;
 	cpx.image = 1.0;
@@ -447,7 +451,8 @@ static void test_registry_types(lua_t lua) {
 	auto cpxget = lua.get_global<complex_t>("test_complex");
 	lua.set_global("test_complex_view", lua.make_registry_object_view((number_t*)&cpx));
 
-	auto r1 = lua.set_global("test_reflection", std::function<void(int, double)>(+[](int a, double b) { return 1; }));
+	test_refl functor;
+	auto r1 = lua.set_global("test_reflection", functor);
 	auto r2 = lua.set_global<&example_t::accum_value>("test_reflection2");
 
 	auto printTable = lua.load("for i, v in pairs(...) do print(v) end");
