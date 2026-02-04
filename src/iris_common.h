@@ -2533,12 +2533,12 @@ namespace iris {
 		size_t iterator_counter = 0;
 	};
 
-	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t>
+	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t, template <typename...> class debug_allocator_t = allocator_t>
 	struct iris_queue_quick_list_t : iris_queue_list_t<value_t, allocator_t, false, iris_queue_quick_list_t<value_t, allocator_t>> {
-		using base_t = iris_queue_list_t<value_t, allocator_t, false, iris_queue_quick_list_t<value_t, allocator_t>>;
-		using element_t = base_t::element_t;
-		using node_t = base_t::node_t;
-		using node_allocator_t = base_t::node_allocator_t;
+		using base_t = iris_queue_list_t<value_t, debug_allocator_t, false, iris_queue_quick_list_t<value_t, debug_allocator_t>>;
+		using element_t = typename base_t::element_t;
+		using node_t = typename base_t::node_t;
+		using node_allocator_t = typename base_t::node_allocator_t;
 
 		// do not copy this structure, only to move
 		iris_queue_quick_list_t(const iris_queue_quick_list_t& rhs) = delete;
