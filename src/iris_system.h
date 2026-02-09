@@ -566,6 +566,80 @@ namespace iris {
 			}
 		}
 
+		template <size_t i, typename entity_iterator_t, typename iterators_t>
+		bool locate_iterators_joined(entity_iterator_t p, iterators_t& it, iterators_t& iterators_begin, size_t last_indices[], std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>* entity_components[]) {
+			return true;
+		}
+
+		template <size_t i, typename first_component_t, typename... components_t, typename entity_iterator_t, typename iterators_t>
+		bool locate_iterators_joined(entity_iterator_t p, iterators_t& it, iterators_t& iterators_begin, size_t last_indices[], std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>* entity_components[]) {
+			auto& entity_components_slice = *(entity_components[i]);
+			auto ip = entity_components_slice.begin();
+
+			size_t& last_index = last_indices[i];
+			ip = iris_binary_find(ip, entity_components_slice.end(), *p);
+			if (ip == entity_components_slice.end() || ip->second == ~index_t(0)) {
+				return false;
+			}
+
+			if (last_index < ip->second) {
+				std::get<i>(it) = std::get<i>(iterators_begin);
+				last_index = 0;
+			}
+
+			step_iterators(it, ip->second - last_index);
+			return locate_iterators_joined<i - 1, components_t...>(p, it, iterators_begin, last_indices, entity_components);
+		}
+
+		template <typename... for_components_t, typename iterator_t, typename operation_t>
+		void filter_joined(iterator_t begin, iterator_t end, operation_t&& op) {
+			auto guard = read_fence();
+			auto iterators_begin = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
+			auto iterators_end = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
+
+			std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>* entity_components[sizeof...(for_components_t)] = { nullptr };
+			for (size_t i = 0; i < system_infos.size(); i++) {
+				auto& system_info = system_infos[i];
+				size_t total_count = match_iterators_joined<decltype(iterators_begin), 0, for_components_t...>(iterators_begin, iterators_end, system_info, entity_components);
+				if (total_count == sizeof...(for_components_t))
+					break;
+			}
+
+			size_t last_indices[sizeof...(for_components_t)] = { 0 };
+			auto it = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...)= iterators_begin;
+
+			for (iterator_t p = begin; p != end; ++p) {
+				if (locate_iterators_joined<sizeof...(for_components_t) - 1, for_components_t...>(p, it, iterators_begin, last_indices, entity_components)) {
+					do_operation(it, op, iris_make_sequence<std::tuple_size<decltype(iterators_begin)>::value>());
+				}
+			}
+		}
+
+		template <typename... for_components_t, typename operation_t>
+		void filter_joined(entity_t e, operation_t&& op) {
+			return filter_joined<for_components_t...>(&e, &e + 1, std::forward<operation_t>(op));
+		}
+
+		template <typename iterators_t, size_t i>
+		size_t match_iterators_joined(iterators_t& iterators_begin, iterators_t& iterators_end, const system_info_t& system_info, std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>* entity_components[]) noexcept {
+			return 0;
+		}
+
+		template <typename iterators_t, size_t i, typename first_component_t, typename... components_t>
+		size_t match_iterators_joined(iterators_t& iterators_begin, iterators_t& iterators_end, const system_info_t& system_info, std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>* entity_components[]) noexcept {
+			if (entity_components[i] == nullptr) {
+				size_t hash = get_type_hash<first_component_t>();
+				auto it = iris_binary_find(system_info.components.begin(), system_info.components.end(), hash);
+				if (it != system_info.components.end()) {
+					auto* list = reinterpret_cast<iris_queue_quick_list_t<first_component_t, allocator_t>*>(it->second);
+					std::get<i>(iterators_begin) = list->begin();
+					std::get<i>(iterators_end) = list->end();
+					entity_components[i] = system_info.entity_components;
+				}
+			}
+
+			return (size_t)(entity_components[i] != nullptr) + match_iterators_joined<iterators_t, i + 1, components_t...>(iterators_begin, iterators_end, system_info, entity_components);
+		}
 
 	protected:
 		template <typename system_t>

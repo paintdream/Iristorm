@@ -153,6 +153,18 @@ int main(void) {
 		i = counter++;
 	});
 
+	systems.filter_joined<float, iris_component_matrix_t>(1u, [](float& f, iris_component_matrix_t& mat) {
+		printf("jointed filter: %f\n", f);
+	});
+
+	systems.filter_joined<float>(1u, [](float& f) {
+		printf("jointed filter2: %f\n", f);
+	});
+
+	systems.filter_joined<float, iris_component_matrix_t>(8u, [](float& f, iris_component_matrix_t& mat) {
+		IRIS_ASSERT(false);
+	});
+
 	systems.filter<uint8_t>(1, [](uint8_t& v) {
 		printf("Entity 1 = %u\n", v);
 	});
