@@ -599,7 +599,7 @@ namespace iris {
 			auto iterators_end = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
 
 			std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>* entity_components[sizeof...(for_components_t)] = { nullptr };
-			std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>::iterator ips[sizeof...(for_components_t)] = {};
+			typename std::vector<iris_key_value_t<entity_t, index_t>, vector_allocator_t<iris_key_value_t<entity_t, index_t>>>::iterator ips[sizeof...(for_components_t)] = {};
 			for (size_t i = 0; i < system_infos.size(); i++) {
 				auto& system_info = system_infos[i];
 				size_t total_count = match_iterators_joined<decltype(iterators_begin), 0, for_components_t...>(iterators_begin, iterators_end, system_info, entity_components);
