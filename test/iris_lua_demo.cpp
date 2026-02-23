@@ -137,6 +137,7 @@ struct example_t : example_base_t {
 		lua.set_current<&example_t::join_value_required>("join_value_required");
 		lua.set_current<&example_t::join_value_refptr>("join_value_refptr");
 		lua.set_current<&example_t::join_value_required_refptr>("join_value_required_refptr");
+		lua.set_current<&example_t::var>("var");
 		lua.set_current<&example_t::get_value>("get_value");
 		lua.set_current<&example_t::get_value_raw>("get_value_raw");
 		lua.set_current<&example_t::get_value_raw_lambda>("get_value_raw_lambda");
@@ -238,6 +239,13 @@ struct example_t : example_base_t {
 		if (rhs != nullptr) {
 			value += rhs->value;
 		}
+	}
+
+	static lua_t::native_variadic_t var(lua_t lua, const lua_t::native_variadic_t&& params) {
+		printf("Variadic param count: %d, index: %d\n", params.get_count(), params.get_index());
+		lua.native_push_variable(params.get_count());
+		lua.native_push_variable(params.get_index());
+		return lua_t::native_variadic_t(0);
 	}
 
 	void join_value_required(lua_t::required_t<example_t*>&& rhs) noexcept {
@@ -782,6 +790,8 @@ static void test_bindings(lua_t lua) {
 		b:join_value_required_refptr(a)\n\
 		--b:join_value_required_refptr()\n\
 		print(a.const_value)\n\
+		local count, base = a.var(1, 2, 3)\n\
+		print('lua base ' .. base .. ', count ' .. count)\n\
 		b.value = 1\n\
 		assert(b.value == 1)\n\
 		assert(b:get_value_raw() == 1)\n\

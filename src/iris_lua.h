@@ -850,6 +850,32 @@ namespace iris {
 			ref_t ref;
 		};
 
+		struct native_variadic_t {
+			native_variadic_t(int n = 0) noexcept : index(0), count(n) {}
+
+			static native_variadic_t lua_fromstack(iris_lua_t lua, int index) {
+				return native_variadic_t(index, lua_gettop(lua.get_state()) - index + 1);
+			}
+
+			template <typename subtype_t>
+			static int lua_tostack(iris_lua_t lua, subtype_t&& variable) {
+				return variable.count;
+			}
+
+			int get_index() const noexcept {
+				return index;
+			}
+
+			int get_count() const noexcept {
+				return count;
+			}
+
+		private:
+			native_variadic_t(int i, int n) noexcept : index(i), count(n) {}
+			int index;
+			int count;
+		};
+
 		// requried_t is for validating parameters before actually call the C++ stub
 		// will raise a lua error if it fails
 		struct required_base_t {};
@@ -2330,7 +2356,7 @@ namespace iris {
 
 			type_t* ptr = reinterpret_cast<type_t*>(lua_newuserdatauv(L, iris_to_alignment(sizeof(type_t), size_mask_alignment), 0));
 			new (ptr) type_t(std::forward<object_t>(object));
-			static_assert(std::is_reference_v<object_t>, "Must not be a reference!");
+			static_assert(std::is_reference_v<object_t>, "Must be a reference!");
 
 			if constexpr (!std::is_trivially_destructible_v<object_t>) {
 				lua_newtable(L);
@@ -2809,7 +2835,7 @@ namespace iris {
 				return extract_object_ptr<remove_cvref_t<std::remove_pointer_t<value_t>>>(L, index);
 			} else if constexpr (std::is_base_of_v<required_base_t, value_t>) {
 				return get_variable<typename value_t::required_type_t, true>(L, index);
-			} else if constexpr (std::is_reference_v<type_t>) {
+			} else if constexpr (std::is_reference_v<type_t> && !std::is_rvalue_reference_v<type_t>) {
 				// returning existing reference from internal storage
 				// must check before calling this
 				return *get_variable<std::remove_reference_t<type_t>*>(L, index);
@@ -2959,7 +2985,7 @@ namespace iris {
 						deref(L, std::move(var));
 					}
 				}
-			} else if constexpr (std::is_reference_v<type_t>) {
+			} else if constexpr (std::is_reference_v<type_t> && !std::is_rvalue_reference_v<type_t>) {
 				// returning existing reference from interval storage
 				// must check before calling this
 				check_result = check_required_parameters<required_t<std::remove_reference_t<type_t>*>>(L, env_count, up_base, use_this, index, throw_error);
