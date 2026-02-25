@@ -1050,6 +1050,13 @@ namespace iris {
 			return reftype_t<type_t>(luaL_ref(L, LUA_REGISTRYINDEX));
 		}
 
+		template <typename type_t, typename base_type_t>
+		reftype_t<type_t> make_type(base_type_t&& base) {
+			auto type = make_type<type_t>();
+			cast_type(std::forward<base_type_t>(base), type);
+			return type;
+		}
+
 		template <typename type_t>
 		reftype_t<type_t> make_registry_type() {
 			auto r = get_registry<ref_t>(reftype_t<type_t>::get_type_name());
@@ -1067,6 +1074,13 @@ namespace iris {
 			set_registry(hash, type);
 			set_registry(reftype_t<type_t>::get_type_name(), type);
 
+			return type;
+		}
+
+		template <typename type_t, typename base_type_t>
+		reftype_t<type_t> make_registry_type(base_type_t&& base) {
+			auto type = make_registry_type<type_t>();
+			cast_type(std::forward<base_type_t>(base), type);
 			return type;
 		}
 

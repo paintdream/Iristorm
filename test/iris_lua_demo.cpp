@@ -241,7 +241,7 @@ struct example_t : example_base_t {
 		}
 	}
 
-	static lua_t::native_variadic_t var(lua_t lua, const lua_t::native_variadic_t&& params) {
+	static lua_t::native_variadic_t var(lua_t lua, lua_t::native_variadic_t&& params) {
 		printf("Variadic param count: %d, index: %d\n", params.get_count(), params.get_index());
 		lua.native_push_variable(params.get_count());
 		lua.native_push_variable(params.get_index());
@@ -516,9 +516,9 @@ static void test_registry_types(lua_t lua) {
 		printf("once value = %d\n", lua.get_current<int>("once"));
 	}));
 
-	auto example_type = lua.make_registry_type<example_t>();
 	auto example_base_type = lua.make_type<example_base_t>();
-	lua.cast_type(std::move(example_base_type), example_type);
+	auto example_type = lua.make_registry_type<example_t>(std::move(example_base_type));
+	// lua.cast_type(std::move(example_base_type), example_type);
 	lua.set_global("example_t", std::move(example_type));
 	lua.set_global("refstr", "shared_string_object");
 	auto p = lua.get_global<lua_t::refview_t<std::string_view>>("refstr").value();
@@ -623,7 +623,6 @@ end\n\
 	existing_object.value = 2222;
 	auto temp_type = target.make_registry_type<example_t>();
 	{
-		// target.cast_type(std::move(example_base_type), temp_type);
 		temp_type.make_cast(target, target.make_type<example_base_t>());
 	}
 
