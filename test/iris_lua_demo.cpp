@@ -66,9 +66,17 @@ struct complex_t : number_t {
 template <>
 struct iris::iris_lua_traits_t<complex_t> : lua_t::traits_trivial_t<complex_t> {};
 
-struct example_base_t {
+template <typename type_t>
+struct crtp_t {
+	void crtp_foo() {
+		printf("CRTP foo()!\n");
+	}
+};
+
+struct example_base_t : crtp_t<example_base_t> {
 	template <typename traits_t>
 	static void lua_registar(lua_t lua, traits_t) {
+		lua.set_current<&example_base_t::crtp_foo, example_base_t>("crtp_foo");
 		lua.set_current<&example_base_t::base_value>("base_value");
 		lua.set_current<&example_base_t::base_func>("base_func");
 		lua.set_current<&example_base_t::base_bind_static>("base_bind_static", 1.0);
@@ -598,6 +606,7 @@ function test(a, b, c) \n\
 	b:base_func() \n\
 	b:base_bind() \n\
 	b.base_bind_static() \n\
+	b:crtp_foo() \n\
 	print('equal value ======== ' .. tostring(b == c)) \n\
 	print('base value ======== ' .. tostring(b.base_value)) \n\
 	print('cross ' .. tostring(a)) \n\
