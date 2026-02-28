@@ -71,12 +71,15 @@ struct crtp_t {
 	void crtp_foo() {
 		printf("CRTP foo()!\n");
 	}
+
+	int crtp_member = 5;
 };
 
 struct example_base_t : crtp_t<example_base_t> {
 	template <typename traits_t>
 	static void lua_registar(lua_t lua, traits_t) {
 		lua.set_current<&example_base_t::crtp_foo, example_base_t>("crtp_foo");
+		lua.set_current<&example_base_t::crtp_member, example_base_t>("crtp_member");
 		lua.set_current<&example_base_t::base_value>("base_value");
 		lua.set_current<&example_base_t::base_func>("base_func");
 		lua.set_current<&example_base_t::base_bind_static>("base_bind_static", 1.0);

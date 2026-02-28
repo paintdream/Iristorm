@@ -408,6 +408,7 @@ namespace iris {
 
 				push_variable(L, *this);
 				if (lua_istable(L, -1)) {
+					check_matched_member_class_type<ptr, type_t>();
 					push_variable(L, std::forward<key_t>(key));
 					push_variable<ptr, type_t>(L);
 					lua_rawset(L, -3);
@@ -1328,6 +1329,7 @@ namespace iris {
 		ref_t make_value() {
 			lua_State* L = state;
 			stack_guard_t guard(L);
+			check_matched_member_class_type<value_t, type_t>();
 			push_variable<value_t, type_t>(L);
 			return ref_t(luaL_ref(L, LUA_REGISTRYINDEX));
 		}
@@ -1418,14 +1420,15 @@ namespace iris {
 		}
 
 		// get lua registry table
-		template <auto value_t, typename type_t = void, typename key_t>
+		template <auto ptr, typename type_t = void, typename key_t>
 		reflection_t set_registry(key_t&& key) {
 			auto guard = write_fence();
 			lua_State* L = state;
 			stack_guard_t stack_guard(L);
 
+			check_matched_class_type<ptr, type_t>(L);
 			push_variable(L, std::forward<key_t>(key));
-			reflection_t reflection = push_variable<value_t, type_t>(L);
+			reflection_t reflection = push_variable<ptr, type_t>(L);
 			lua_rawset(L, LUA_REGISTRYINDEX);
 
 			return reflection;
@@ -1498,12 +1501,14 @@ namespace iris {
 			stack_guard_t stack_guard(L);
 
 			if constexpr (std::is_member_object_pointer_v<decltype(ptr)>) {
+				check_matched_class_type<ptr, type_t>(L);
+
 				lua_pushliteral(L, "__get");
 				lua_rawget(L, -2);
 				IRIS_ASSERT(lua_type(L, -1) == LUA_TTABLE);
 
 				push_variable(L, std::forward<key_t>(key));
-				push_property_get<ptr>(L, ptr);
+				push_property_get<ptr, type_t>(L, ptr);
 				lua_rawset(L, -3);
 				lua_pop(L, 1);
 
@@ -1512,12 +1517,13 @@ namespace iris {
 				IRIS_ASSERT(lua_type(L, -1) == LUA_TTABLE);
 
 				push_variable(L, std::forward<key_t>(key));
-				reflection_t reflection = push_property_set<ptr>(L, ptr);
+				reflection_t reflection = push_property_set<ptr, type_t>(L, ptr);
 				lua_rawset(L, -3);
 				lua_pop(L, 1);
 
 				return reflection;
 			} else {
+				check_matched_class_type<ptr, type_t>(L);
 				push_variable(L, std::forward<key_t>(key));
 				reflection_t reflection = push_variable<ptr, type_t>(L, std::forward<envs_t>(envs)...);
 				lua_rawset(L, -3);
@@ -1538,6 +1544,7 @@ namespace iris {
 			lua_State* L = state;
 			stack_guard_t stack_guard(L);
 
+			check_matched_class_type<ptr, type_t>(L);
 			reflection_t reflection = push_variable<ptr, type_t>(L, std::forward<envs_t>(envs)...);
 			if (lua_getupvalue(L, -1, 1) == nullptr) {
 				auto func = lua_tocfunction(L, -1);
@@ -2297,6 +2304,51 @@ namespace iris {
 		}
 
 		// four specs for [const][noexcept] method definition
+		template <auto ptr, typename subtype_t>
+		static void check_matched_class_type(lua_State* L) {
+			if constexpr (std::is_member_function_pointer_v<decltype(ptr)> || std::is_member_object_pointer_v<decltype(ptr)>) {
+				check_matched_member_class_type<ptr, subtype_t>(L, ptr);
+			}
+		}
+
+		template <auto property, typename subtype_t, typename return_t, typename type_t>
+		static void check_matched_member_class_type(lua_State* L, return_t type_t::*) {
+			check_matched_class_type_internal(L, reinterpret_cast<void*>(get_hash<std::conditional_t<std::is_void_v<subtype_t>, type_t, subtype_t>>()));
+		}
+
+		template <auto method, typename subtype_t, typename return_t, typename type_t, typename... args_t>
+		static void check_matched_member_class_type(lua_State* L, return_t(type_t::*)(args_t...)) {
+			check_matched_class_type_internal(L, reinterpret_cast<void*>(get_hash<std::conditional_t<std::is_void_v<subtype_t>, type_t, subtype_t>>()));
+		}
+
+		template <auto method, typename subtype_t, typename return_t, typename type_t, typename... args_t>
+		static void check_matched_member_class_type(lua_State* L, return_t(type_t::*)(args_t...) noexcept) {
+			check_matched_class_type_internal(L, reinterpret_cast<void*>(get_hash<std::conditional_t<std::is_void_v<subtype_t>, type_t, subtype_t>>()));
+		}
+
+		template <auto method, typename subtype_t, typename return_t, typename type_t, typename... args_t>
+		static void check_matched_member_class_type(lua_State* L, return_t(type_t::*)(args_t...) const) {
+			check_matched_class_type_internal(L, reinterpret_cast<void*>(get_hash<std::conditional_t<std::is_void_v<subtype_t>, type_t, subtype_t>>()));
+		}
+
+		template <auto method, typename subtype_t, typename return_t, typename type_t, typename... args_t>
+		static void check_matched_member_class_type(lua_State* L, return_t(type_t::*)(args_t...) const noexcept) {
+			check_matched_class_type_internal(L, reinterpret_cast<void*>(get_hash<std::conditional_t<std::is_void_v<subtype_t>, type_t, subtype_t>>()));
+		}
+
+		static void check_matched_class_type_internal(lua_State* L, void* hash) {
+#ifdef _DEBUG
+			lua_pushliteral(L, "__typeid");
+			lua_rawget(L, -2);
+			const void* ptr = lua_touserdata(L, -1);
+			lua_pop(L, 1);
+
+			// when binding from parent class member, please specify sub class explicitly, such as:
+			// lua.set_current<ptr, subclass_t>(...)
+			IRIS_ASSERT(ptr == nullptr || ptr == hash);
+#endif
+		}
+
 		template <auto method, typename subtype_t, typename object_t, typename return_t, typename type_t, typename... args_t, typename... envs_t>
 		static reflection_t push_method(lua_State* L, object_t&& object, return_t(type_t::*)(args_t...), envs_t&&... envs) {
 			return push_method_internal<method, subtype_t, object_t, return_t, type_t, args_t...>(L, std::forward<object_t>(object), std::forward<envs_t>(envs)...);
@@ -2392,9 +2444,9 @@ namespace iris {
 			return &IRIS_LUA_REFLECTION<function, return_t, args_t...>;
 		}
 		
-		template <auto prop, typename type_t, typename value_t>
+		template <auto prop, typename subtype_t, typename type_t, typename value_t>
 		static reflection_t push_property_get(lua_State* L, value_t type_t::*) {
-			push_property_get_internal<prop, type_t>(L);
+			push_property_get_internal<prop, std::conditional_t<std::is_void_v<subtype_t>, type_t, subtype_t>>(L);
 			return &IRIS_LUA_REFLECTION<prop, std::add_const_t<value_t>>;
 		}
 
@@ -2403,9 +2455,9 @@ namespace iris {
 			lua_pushcclosure(L, &iris_lua_t::property_get_proxy<prop, type_t>, 0);
 		}
 
-		template <auto prop, typename type_t, typename value_t>
+		template <auto prop, typename subtype_t, typename type_t, typename value_t>
 		static reflection_t push_property_set(lua_State* L, value_t type_t::*) {
-			push_property_set_internal<prop, type_t>(L);
+			push_property_set_internal<prop, std::conditional_t<std::is_void_v<subtype_t>, type_t, subtype_t>>(L);
 			return &IRIS_LUA_REFLECTION<prop, std::remove_const_t<value_t>>;
 		}
 

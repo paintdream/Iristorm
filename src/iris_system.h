@@ -154,9 +154,9 @@ namespace iris {
 		template <typename to_component_t, typename from_component_t>
 		to_component_t& locate(const from_component_t& from_component) noexcept {
 			auto guard = read_fence();
-			size_t index = std::get<fetch_index<from_component_t>::value>(components).get_index(from_component);
+			size_t index = component<from_component_t>().get_index(from_component);
 			IRIS_ASSERT(index != ~(size_t)0);
-			return std::get<fetch_index<to_component_t>::value>(components).get(index);
+			return component<to_component_t>().get(index);
 		}
 
 		// get specified component of given entity
@@ -164,7 +164,7 @@ namespace iris {
 		component_t& get(entity_t entity) noexcept {
 			auto guard = read_fence();
 			IRIS_ASSERT(valid(entity));
-			return std::get<fetch_index<component_t>::value>(components).get(iris_binary_find(entity_components.begin(), entity_components.end(), entity)->second);
+			return component<component_t>().get(iris_binary_find(entity_components.begin(), entity_components.end(), entity)->second);
 		}
 
 		template <typename... for_components_t, typename operation_t>
@@ -184,7 +184,7 @@ namespace iris {
 					return begin;
 				}
 
-				op(std::get<fetch_index<for_components_t>::value>(components).get(ip->second)...);
+				op(component<for_components_t>().get(ip->second)...);
 				++begin;
 			}
 
@@ -196,7 +196,7 @@ namespace iris {
 			auto guard = read_fence();
 
 			IRIS_ASSERT(valid(entity));
-			return std::get<fetch_index<component_t>::value>(components).get(iris_binary_find(entity_components.begin(), entity_components.end(), entity)->second);
+			return component<component_t>().get(iris_binary_find(entity_components.begin(), entity_components.end(), entity)->second);
 		}
 
 		// entity-based component removal
@@ -612,7 +612,7 @@ namespace iris {
 			}
 
 			size_t last_indices[sizeof...(for_components_t)] = { 0 };
-			auto it = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...)= iterators_begin;
+			auto it = std::make_tuple(typename iris_queue_quick_list_t<for_components_t, allocator_t>::iterator()...);
 
 			for (iterator_t p = begin; p != end; ++p) {
 				if (locate_iterators_joined<sizeof...(for_components_t) - 1, for_components_t...>(p, it, iterators_begin, last_indices, entity_components, ips)) {
