@@ -1714,13 +1714,17 @@ namespace iris {
 			stack_guard_t stack_guard_target(T, 1);
 
 			int src_index = lua_absindex(L, index);
-			lua_newtable(L);
-			lua_newtable(T);
-
-			cross_transfer_variable<move>(L, target, src_index, lua_absindex(L, -1), lua_absindex(T, -1), 0);
-
-			lua_replace(T, -2);
-			lua_pop(L, 1);
+			int type = lua_type(L, src_index);
+			// simplify non-recursive type transferring
+			if (type != LUA_TUSERDATA && type != LUA_TFUNCTION && type != LUA_TTABLE) {
+				cross_transfer_variable<move>(L, target, src_index, 0, 0, 0);
+			} else {
+				lua_newtable(L);
+				lua_newtable(T);
+				cross_transfer_variable<move>(L, target, src_index, lua_absindex(L, -1), lua_absindex(T, -1), 0);
+				lua_replace(T, -2);
+				lua_pop(L, 1);
+			}
 		}
 
 		template <typename callable_t>
