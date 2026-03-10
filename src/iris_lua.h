@@ -3684,7 +3684,11 @@ namespace iris {
 						while ((name = lua_getupvalue(L, absindex, n)) != nullptr) {
 							if (strcmp(name, "_ENV") == 0) {
 								// set global env
+#if LUA_VERSION_NUM >= 502
+								lua_pushglobaltable(T);
+#else
 								lua_getglobal(T, "_G");
+#endif
 							} else {
 								recursion_index = cross_transfer_variable<false>(L, target, -1, recursion_source, recursion_target, recursion_index);
 							}
