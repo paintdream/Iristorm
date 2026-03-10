@@ -404,8 +404,8 @@ static void env_test(std::string title, std::string hi) {
 
 struct shared_object_example_t : lua_t::shared_local_object_t<shared_object_example_t> {
 	static void lua_registar(lua_t lua, std::nullptr_t) {
-		lua.set_current<&shared_object_example_t::foo>("foo");
-		lua.set_current<&shared_object_example_t::other>("other");
+		lua.set_current<&shared_object_example_t::foo, shared_object_example_t>("foo");
+		lua.set_current<&shared_object_example_t::other, shared_object_example_t>("other");
 		lua.set_current_new<&lua_t::shared_new_object<shared_object_example_t, int>>("make", 2);
 	}
 
