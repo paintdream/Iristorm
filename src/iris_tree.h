@@ -130,7 +130,7 @@ namespace iris {
 			}
 
 			for (index_t i = size / 2; i < size; i++) {
-				quantized_values[i] = std::max((long)0, std::min(range, (long)((get(value, i) - get(box, i - size / 2)) / (get(box, i) - get(box, i - size / 2)))));
+				quantized_values[i] = std::max((long)0, std::min(range, (long)(range * (get(value, i) - get(box, i - size / 2)) / (get(box, i) - get(box, i - size / 2)))));
 			}
 
 			return interleave(quantized_values, size);
