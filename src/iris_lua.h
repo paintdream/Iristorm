@@ -408,7 +408,7 @@ namespace iris {
 
 				push_variable(L, *this);
 				if (lua_istable(L, -1)) {
-					check_matched_member_class_type<ptr, type_t>();
+					check_matched_class_type<ptr, type_t>(L);
 					push_variable(L, std::forward<key_t>(key));
 					push_variable<ptr, type_t>(L);
 					lua_rawset(L, -3);
@@ -1329,7 +1329,6 @@ namespace iris {
 		ref_t make_value() {
 			lua_State* L = state;
 			stack_guard_t guard(L);
-			check_matched_member_class_type<value_t, type_t>();
 			push_variable<value_t, type_t>(L);
 			return ref_t(luaL_ref(L, LUA_REGISTRYINDEX));
 		}

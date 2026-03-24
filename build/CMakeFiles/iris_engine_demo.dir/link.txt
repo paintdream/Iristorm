@@ -1,1 +1,0 @@
-/usr/bin/c++ -D_DEBUG -g -Wl,--dependency-file=CMakeFiles/iris_engine_demo.dir/link.d CMakeFiles/iris_engine_demo.dir/test/iris_engine_demo.cpp.o -o iris_engine_demo  -lm -lstdc++ -lpthread

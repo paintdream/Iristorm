@@ -1,1 +1,0 @@
-/usr/bin/c++ -D_DEBUG -g -Wl,--dependency-file=CMakeFiles/iris_coroutine_demo.dir/link.d CMakeFiles/iris_coroutine_demo.dir/test/iris_coroutine_demo.cpp.o -o iris_coroutine_demo  -lm -lstdc++ -lpthread

@@ -1,1 +1,0 @@
-/usr/bin/c++ -D_DEBUG -g -Wl,--dependency-file=CMakeFiles/iris_tree_demo.dir/link.d CMakeFiles/iris_tree_demo.dir/test/iris_tree_demo.cpp.o -o iris_tree_demo  -lm -lstdc++ -lpthread
