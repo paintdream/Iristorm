@@ -173,6 +173,14 @@ struct example_t : example_base_t {
 #endif
 	}
 
+	static void lua_coroutine_begin(lua_t lua, example_t* self) {
+		printf("lua_coroutine_begin\n");
+	}
+
+	static void lua_coroutine_end(lua_t lua, example_t* self) {
+		printf("lua_coroutine_end\n");
+	}
+
 	example_t() noexcept {}
 	example_t(const example_t& rhs) noexcept {
 		printf("copy construct!!\n");
