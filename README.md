@@ -1,5 +1,37 @@
 # Iristorm
-Iristorm is an extensible asynchronous header-only framework written in pure modern C++, including a M:N task scheduler (with coroutine support for C++ 20 optionally) and an advanced DAG-based task dispatcher.
+
+Iristorm is an extensible asynchronous **header-only** framework written in pure modern C++. It provides:
+
+- **M:N Warp-based Task Scheduler** — a flexible task scheduling system inspired by [Boost.Asio](https://www.boost.org/) strands, mapping N logical warps to M worker threads with automatic mutual exclusion.
+- **C++20 Coroutine Integration** — first-class `co_await` support for warp switching, task awaiting, barriers, events, and resource quotas.
+- **Lua Binding System** — a reflection-based C++17 binding layer for exposing C++ types, methods, properties, and coroutines to Lua with minimal boilerplate.
+- **DAG-based Task Dispatcher** — a task graph for dispatching tasks with partial-order dependencies.
+
+## Table of Contents
+
+- [Build](#build)
+- [License](#license)
+- [Concepts](#concepts)
+- [Quick Start: Warp System](#quick-start)
+- [Step Further](#step-further)
+  - [In-Warp Parallel](#in-warp-parallel)
+  - [Coroutines](#coroutines)
+  - [DAG-based Task Dispatcher](#dag-based-task-dispatcher)
+  - [Polling from External Thread](#polling-from-external-thread)
+  - [Exiting](#exiting)
+- [Lua Binding](#lua-binding)
+  - [Registering a Type](#registering-a-type)
+  - [Custom Type Conversion](#custom-type-conversion)
+  - [Inheritance and CRTP](#inheritance-and-crtp)
+  - [Overloaded Methods](#overloaded-methods)
+  - [Working with Tables and References](#working-with-tables-and-references)
+  - [Calling Lua from C++](#calling-lua-from-c)
+- [Lua Coroutine Integration](#lua-coroutine-integration)
+  - [Exposing Coroutine Methods to Lua](#exposing-coroutine-methods-to-lua)
+  - [Async Wait from Lua](#async-wait-from-lua)
+  - [Warp Scheduling from Lua Coroutines](#warp-scheduling-from-lua-coroutines)
+  - [Resource Quotas from Lua](#resource-quotas-from-lua)
+- [Files](#files)
 
 ## Build
 
@@ -22,13 +54,13 @@ Iristorm provides a simple M:N task scheduler called **Warp System** which is in
 
 #### Task
 
-A task is the **logical** executing unit in concept of application development . Usually it is represented by a function pointer. 
+A task is the **logical** executing unit in concept of application development. Usually it is represented by a function pointer. 
 
 #### Thread
 
 A thread is a **native** execution unit provided by operating system. **Tasks must be run in threads**. Different threads are considered to be possibly running at the same time.
 
-**Multi-threading**, which aims to run several threads within an program, is an effective approach to making full use of CPUs in many-core system. Usually it's very hard to code and debug. Therefore, there are many data structures, programming patterns and frameworks to simplify coding process and make it easier for developers. This project is one of them.
+**Multi-threading**, which aims to run several threads within a program, is an effective approach to making full use of CPUs in many-core system. Usually it's very hard to code and debug. Therefore, there are many data structures, programming patterns and frameworks to simplify coding process and make it easier for developers. This project is one of them.
 
 #### Thread Pool
 
@@ -52,11 +84,11 @@ The thread count **M** of Warp System is **fixed** when it starts. But the warp 
 
 ## Quick Start
 
-Let's start with simple programs in [iris_dispatcher_demo.cpp](iris_dispatcher_demo.cpp) . 
+Let's start with simple programs in [iris_dispatcher_demo.cpp](test/iris_dispatcher_demo.cpp). 
 
 #### Basic Example: simple explosion
 
-The Warp System runs on a thread pool, and the first thing is to create it. There is a built-in thread pool written in C++ 11 std::thread in [iris_dispatcher.h](iris_dispatcher.h), you can replace it with your own platform-correlated implementation.
+The Warp System runs on a thread pool, and the first thing is to create it. There is a built-in thread pool written in C++ 11 std::thread in [iris_dispatcher.h](src/iris_dispatcher.h), you can replace it with your own platform-correlated implementation.
 
 ```C++
 static const size_t thread_count = 4;
@@ -95,9 +127,9 @@ warps[0].queue_routine([]() { /* do operation C */});
 warps[1].queue_routine([]() { /* do operation D */});
 ```
 
-According to warp restrictions, operation A and operation B **could be executed at the same time**.
+According to warp restrictions, operation C and operation D **could be executed at the same time**.
 
-Here is an "explosion" example. In this example, we code a function called "explosion", which randomly folks multiple recursions of writing operations on a integer array described here:
+Here is an "explosion" example. In this example, we code a function called "explosion", which randomly forks multiple recursions of writing operations on an integer array described here:
 
 ```C++
 static int32_t warp_data[warp_count] = { 0 };
@@ -222,17 +254,17 @@ The answer contains three aspects:
 
 1. Convenient: The only thing you must remember is the rule that **always schedule task according to warp**. There is no lock-order requirement, dead-locking, busy-waiting, memory order problem and atomic myths.
 2. High performance: If we abuse locks and atomics everywhere, for example, allocating separate locks on each object, do locks or atomic operations as long as we need to visit objects, then the program will stuck on bus-locking, kernel-switching and thread-switching, which lead to low performance issues. The warp concept wraps a series of operations or a mount of objects into a logical "scheduling package", reducing switching cost and busy-wait cost, making them more friendly for multi-thread systems.
-3. Flexible: you could easily adjust the object/task warping rules as you like. For example, allocating more warps and splitting objects with smaller granularity if you have more CPUs.  The system allows programmers to transport a object or a group of tasks from one warp to another dynamically, if they are working on some dynamic overload balancing features. 
+3. Flexible: you could easily adjust the object/task warping rules as you like. For example, allocating more warps and splitting objects with smaller granularity if you have more CPUs. The system allows programmers to transport a object or a group of tasks from one warp to another dynamically, if they are working on some dynamic overload balancing features. 
 
 
 
-## Step further
+## Step Further
 
 ### In-Warp Parallel
 
 In common case, there is only one thread running in a warp context. But what if we want to break the rule temporarily by local code and do some parallelized operations with warp restriction holding for other code? I know it's unsafe, but I just want to do it.
 
-Open the [iris_dispatcher_demo.cpp](iris_dispatcher_demo.cpp) and you could find a piece of code in function "simple_explosion":
+Open the [iris_dispatcher_demo.cpp](test/iris_dispatcher_demo.cpp) and you could find a piece of code in function "simple_explosion":
 
 ```C++
 static constexpr size_t parallel_factor = 11;
@@ -259,9 +291,9 @@ The function **queue_routine_parallel** invokes a special parallelized task on c
 
 In C++ 20, we can use coroutines to simplify asynchronous program development.
 
-Warp system supports coroutines integration, you could find an example at [iris_coroutine_demo.cpp](iris_coroutine_demo.cpp):
+Warp system supports coroutines integration, you could find an example at [iris_coroutine_demo.cpp](test/iris_coroutine_demo.cpp):
 
-To start with a coroutine, just write a function with return value type "iris_coroutine_t":
+To start with a coroutine, just write a function with return value type `iris_coroutine_t`:
 
 ```C++
 iris_coroutine_t<return_type> example(warp_t::async_worker_t& async_worker, warp_t* warp, int value) {}
@@ -282,9 +314,9 @@ if (warp != nullptr) {
 }
 ```
 
-co_wait iris_switch returns previous warp. Notice that we can switch to a nullptr warp, which means that we are planning to detach from current warp. Switching from nullptr warp to a valid warp is also allowed respectively.
+`co_await iris_switch` returns previous warp. Notice that we can switch to a `nullptr` warp, which means that we are planning to detach from current warp. Switching from `nullptr` warp to a valid warp is also allowed respectively.
 
-And we can create and wait a asynchronized task on target warp:
+And we can create and wait an asynchronized task on target warp:
 
 ```C++
 co_await iris_awaitable(warp, []() {});
@@ -293,19 +325,66 @@ co_await iris_awaitable(warp, []() {});
 It is equivalent to switching to warp and switching back. But **iris_awaitable** allows early dispatching before waiting:
 
 ```C++
-auto awaitble = iris_awaitable(warp, []() {});
+auto awaitable = iris_awaitable(warp, []() {});
 awaitable.dispatch();
 // do something other
 co_await awaitable;
 ```
 
-iris_coroutine_t<return_type> is not only a coroutine but also an awaitable object. You could also co_await it to chain your coroutine pipeline.
+`iris_coroutine_t<return_type>` is not only a coroutine but also an awaitable object. You could also `co_await` it to chain your coroutine pipeline:
+
+```C++
+static iris_coroutine_t<int> cascade_ret(warp_t* warp) {
+	warp_t* w = co_await iris_switch(warp);
+	printf("Cascaded int!\n");
+	co_await iris_switch(w);
+	co_return 1234;
+}
+
+// In another coroutine:
+int result = co_await cascade_ret(warp);
+// result == 1234
+```
+
+Additional coroutine utilities include:
+
+- **iris_barrier_t**: synchronization barrier for N coroutines
+
+  ```C++
+  iris_barrier_t<void, bool, worker_t> barrier(worker, 4);
+  // In each coroutine:
+  co_await barrier;  // all 4 must reach here before any proceeds
+  ```
+
+- **iris_event_t**: event signaling for coroutines
+
+  ```C++
+  iris_event_t<warp_t> event(async_worker);
+  // Waiter: co_await event;
+  // Signaler: event.notify();
+  ```
+
+- **iris_quota_t / iris_quota_queue_t**: resource quota management
+
+  ```C++
+  iris_quota_t<int, 2> quota({ 4, 5 });
+  iris_quota_queue_t<iris_quota_t<int, 2>, warp_t> quota_queue(worker, quota);
+  auto guard = co_await quota_queue.guard({ 1, 3 });
+  // quota automatically released when guard goes out of scope
+  ```
+
+- **iris_select**: randomly select an available warp from a range
+
+  ```C++
+  co_await iris_switch<warp_t>(nullptr);  // detach first
+  warp_t* selected = co_await iris_select(warp_begin, warp_end);
+  ```
 
 ### DAG-based Task Dispatcher
 
 DAG-based Task Dispatcher, also well-known as Task Graph, is widely used task dispatching techniques for tasks with partial order dependency.
 
-We also provide a DAG-based Task Dispatcher called iris_dispatcher_t (see function "graph_dispatch" at [iris_dispatcher_demo ](iris_dispatcher_demo.cpp) ):
+We also provide a DAG-based Task Dispatcher called iris_dispatcher_t (see function "graph_dispatch" at [iris_dispatcher_demo](test/iris_dispatcher_demo.cpp)):
 
 You can create a dispatcher with:
 
@@ -354,7 +433,7 @@ auto b = dispatcher.allocate(&warps[1], [&dispatcher, d]() {
 });
 ```
 
-### Polling from external thread
+### Polling from External Thread
 
 It is a common case that a thread has to be blocked to wait for some signals arrive. For example, suppose you are spinning to wait an atomic variable to be expected value (spin lock, for example), and there are nothing to be done but to spin. In this case, we can try to "borrow" some tasks from thread pool and executing them if our atomic variable is not ready yet.
 
@@ -367,7 +446,7 @@ while (some_variable.load(std::memory_order_acquire) != expected_value) {
 
 ### Exiting 
 
-Use iris_warp_t::poll to poll all tasks from all wraps (including their async_worker's tasks) while exiting.
+Use iris_warp_t::poll to poll all tasks from all warps (including their async_worker's tasks) while exiting.
 
 ```C++
 async_worker.terminate();
@@ -376,4 +455,463 @@ while (iris_warp_t::poll({ &warp1, &warp2, ... })) {
 	std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 ```
+
+## Lua Binding
+
+Iristorm includes a powerful Lua binding system in [iris_lua.h](src/iris_lua.h) that lets you expose C++ types to Lua with minimal boilerplate. It supports methods, properties, constructors, lambdas, overloaded functions, custom type conversions, inheritance, and coroutines. Requires C++17.
+
+### Registering a Type
+
+Define a C++ class with a static `lua_registar` method and a `lua_typename` to expose it to Lua:
+
+```C++
+struct example_t {
+	int value = 10;
+
+	static constexpr const char* lua_typename() noexcept {
+		return "example_t";
+	}
+
+	static void lua_registar(iris_lua_t lua, std::nullptr_t) {
+		// Constructor: example_t.new() from Lua
+		lua.set_current_new<&iris_lua_t::place_new_object<example_t>>("new");
+
+		// Bind a member variable (read/write property from Lua)
+		lua.set_current<&example_t::value>("value");
+
+		// Bind a member function
+		lua.set_current<&example_t::get_value>("get_value");
+
+		// Bind a static function
+		lua.set_current<&example_t::accum_value>("accum_value");
+
+		// Bind a lambda
+		lua.set_current("lambda", [](int v) { return v + 1; });
+	}
+
+	// Optional: called when object is created in Lua
+	static void lua_initialize(iris_lua_t lua, int index, example_t* p) {
+		printf("Object created!\n");
+	}
+
+	// Optional: called when object is garbage-collected
+	static void lua_finalize(lua_State* L, int index, example_t* p) noexcept {
+		printf("Object destroyed!\n");
+	}
+
+	int get_value() noexcept { return value; }
+	int accum_value(int init) noexcept { return value += init; }
+};
+```
+
+Register and use from C++:
+
+```C++
+lua_State* L = luaL_newstate();
+luaL_openlibs(L);
+iris_lua_t lua(L);
+
+// Register the type and make it globally available
+auto example_type = lua.make_registry_type<example_t>();
+lua.set_global("example_t", std::move(example_type));
+```
+
+Then use it from Lua:
+
+```lua
+local obj = example_t.new()
+print(obj.value)         -- 10
+obj.value = 42
+print(obj:get_value())   -- 42
+obj:accum_value(8)
+print(obj.value)         -- 50
+print(obj.lambda(3))     -- 4
+```
+
+### Custom Type Conversion
+
+You can teach the binding system how to convert custom types between C++ and Lua by specializing `iris_lua_traits_t`:
+
+```C++
+struct vector3 {
+	float x, y, z;
+};
+
+template <>
+struct iris::iris_lua_traits_t<vector3> : std::true_type {
+	// Push a vector3 onto the Lua stack as a table {x, y, z}
+	static int lua_tostack(lua_State* L, vector3&& v) noexcept {
+		lua_newtable(L);
+		lua_pushnumber(L, v.x); lua_rawseti(L, -2, 1);
+		lua_pushnumber(L, v.y); lua_rawseti(L, -2, 2);
+		lua_pushnumber(L, v.z); lua_rawseti(L, -2, 3);
+		return 1;
+	}
+
+	// Read a vector3 from the Lua stack
+	static vector3 lua_fromstack(lua_State* L, int index) noexcept {
+		lua_pushvalue(L, index);
+		lua_rawgeti(L, -1, 1);
+		lua_rawgeti(L, -2, 2);
+		lua_rawgeti(L, -3, 3);
+		float x = (float)lua_tonumber(L, -3);
+		float y = (float)lua_tonumber(L, -2);
+		float z = (float)lua_tonumber(L, -1);
+		lua_pop(L, 4);
+		return vector3{ x, y, z };
+	}
+};
+```
+
+Now `vector3` can be used transparently in bound functions:
+
+```C++
+// In lua_registar:
+lua.set_current<&example_t::get_vector3>("get_vector3");
+
+// C++ method:
+vector3 get_vector3(const vector3& input) noexcept { return input; }
+```
+
+```lua
+local v = obj:get_vector3({1.0, 2.0, 3.0})
+print(v[1], v[2], v[3])  -- 1.0  2.0  3.0
+```
+
+### Inheritance and CRTP
+
+Derived types can inherit bindings from a base type. When binding member functions or variables from parent classes, use the explicit type parameter:
+
+```C++
+template <typename type_t>
+struct crtp_t {
+	void crtp_foo() { printf("CRTP foo()!\n"); }
+	int crtp_member = 5;
+};
+
+struct example_base_t : crtp_t<example_base_t> {
+	int base_value = 2222;
+
+	template <typename traits_t>
+	static void lua_registar(iris_lua_t lua, traits_t) {
+		// Must specify the derived type for CRTP members
+		lua.set_current<&example_base_t::crtp_foo, example_base_t>("crtp_foo");
+		lua.set_current<&example_base_t::crtp_member, example_base_t>("crtp_member");
+		lua.set_current<&example_base_t::base_value>("base_value");
+	}
+
+	static constexpr const char* lua_typename() noexcept {
+		return "example_base_t";
+	}
+};
+
+struct example_derived_t : example_base_t {
+	static void lua_registar(iris_lua_t lua, std::nullptr_t) {
+		lua.set_current_new<&iris_lua_t::place_new_object<example_derived_t>>("new");
+		lua.set_current<&example_derived_t::derived_method>("derived_method");
+	}
+	// ...
+};
+
+// Register with inheritance:
+auto base_type = lua.make_type<example_base_t>();
+auto derived_type = lua.make_registry_type<example_derived_t>(std::move(base_type));
+lua.set_global("example_derived_t", std::move(derived_type));
+```
+
+Now Lua objects of `example_derived_t` also have access to `crtp_foo`, `crtp_member`, and `base_value`.
+
+### Overloaded Methods
+
+Use `iris_overload_cast` to disambiguate overloaded methods:
+
+```C++
+struct example_t {
+	int overload_func() { return 1; }
+	int overload_func(int) { return 2; }
+
+	static void lua_registar(iris_lua_t lua, std::nullptr_t) {
+		// Register both overloads under the same Lua name
+		lua.set_current_overload<iris_overload_cast<int>(&example_t::overload_func)>("overload_func");
+		lua.set_current_overload<iris_overload_cast<int, int>(&example_t::overload_func)>("overload_func");
+	}
+};
+```
+
+The binding system automatically selects the correct overload based on the argument count from Lua.
+
+### Working with Tables and References
+
+Create and manipulate Lua tables from C++:
+
+```C++
+// Create a table
+iris_lua_t::ref_t table = lua.make_table([](iris_lua_t lua) noexcept {
+	lua.set_current("name", "prime");
+	lua.set_current(1, 2);
+	lua.set_current(2, 3);
+	lua.set_current(3, 5);
+});
+
+// Read values from a table reference
+auto value = table.get<int>(lua, "name");
+
+// Iterate a table
+table.for_each(lua, [](iris_lua_t lua) {
+	// key at stack[-2], value at stack[-1]
+});
+```
+
+Compound types like `std::vector`, `std::map`, `std::pair`, and `std::tuple` are automatically converted:
+
+```C++
+// C++ function returning a map
+std::map<std::string, int> forward_map(std::map<std::string, int>&& v) {
+	v["abc"] = 123;
+	return v;
+}
+
+// C++ function returning a tuple (becomes multiple return values in Lua)
+std::tuple<int, std::string> forward_tuple(std::tuple<int, std::string>&& v) {
+	std::get<0>(v) = std::get<0>(v) + 1;
+	return v;
+}
+```
+
+### Calling Lua from C++
+
+Call Lua functions from C++ using `ref_t`:
+
+```C++
+// Load and call a Lua chunk
+auto func = lua.load("return function(a, b) return a + b end");
+auto add = lua.call<iris_lua_t::ref_t>(func);
+auto result = lua.call<int>(add, 10, 20);
+// result.value() == 30
+
+// Call a bound method with a callback
+int call(iris_lua_t lua, iris_lua_t::ref_t&& callback, int value) {
+	auto result = lua.call<int>(callback, value);
+	lua.deref(std::move(callback));
+	return result.value_or(0);
+}
+```
+
+```lua
+local obj = example_t.new()
+local result = obj:call(function(v) return v * 2 end, 21)
+print(result)  -- 42
+```
+
+## Lua Coroutine Integration
+
+When C++20 coroutines are available, Iristorm bridges **C++ coroutines** with **Lua coroutines** seamlessly. A C++ method returning `iris_coroutine_t<T>` automatically **yields** the calling Lua coroutine and **resumes** it when the C++ coroutine completes — no manual coroutine management needed on the Lua side.
+
+See the full tutorial at [tutorial/lua_co_await](tutorial/lua_co_await).
+
+### Exposing Coroutine Methods to Lua
+
+Any C++ method that returns `iris_coroutine_t<T>` is automatically treated as a yielding function in Lua:
+
+```C++
+struct tutorial_async_t {
+	static void lua_registar(iris_lua_t&& lua, std::nullptr_t) {
+		lua.set_current_new<&iris_lua_t::place_new_object<tutorial_async_t>>("new");
+		lua.set_current<&tutorial_async_t::wait>("wait");
+	}
+
+	iris_coroutine_t<void> wait(size_t milliseconds) {
+		// Switch to a worker thread (detach from current warp)
+		auto* current = co_await iris_switch(
+			static_cast<iris_warp_t<iris_async_worker_t<>>*>(nullptr));
+
+		// Do blocking work on worker thread
+		std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+
+		// Switch back to the original warp (resumes Lua coroutine)
+		co_await iris_switch(current);
+	}
+};
+```
+
+Coroutines with overloaded signatures are also supported:
+
+```C++
+static void lua_registar(iris_lua_t lua, std::nullptr_t) {
+	lua.set_current_overload<
+		iris_overload_cast<iris::iris_coroutine_t<int>, const std::string&>
+		(&example_t::coro_get_int)>("coro_get_int");
+	lua.set_current_overload<
+		iris_overload_cast<iris::iris_coroutine_t<int>, const std::string&, int>
+		(&example_t::coro_get_int)>("coro_get_int");
+}
+
+static iris::iris_coroutine_t<int> coro_get_int(const std::string& s) noexcept {
+	co_return 1;
+}
+
+static iris::iris_coroutine_t<int> coro_get_int(const std::string& s, int) noexcept {
+	co_return 2;
+}
+```
+
+### Async Wait from Lua
+
+From the Lua side, calling a coroutine method looks like a normal function call when wrapped in a Lua coroutine:
+
+```lua
+-- Wrap in a Lua coroutine to allow yielding
+coroutine.wrap(function()
+    local async = tutorial_async_t.new()
+    print("Waiting 1000ms...")
+    async:wait(1000)           -- yields Lua, sleeps on C++ worker thread
+    print("Wait complete!")    -- resumes here automatically
+end)()
+
+-- The main thread must poll to drive execution:
+while co_await:poll(1000) do end
+```
+
+The C++ `iris_coroutine_t<void>` return type causes the Lua call to yield. When the C++ coroutine finishes and switches back to the original warp, the Lua coroutine is automatically resumed.
+
+### Warp Scheduling from Lua Coroutines
+
+Warp-protected scheduling works naturally with Lua coroutines. Here is a C++ class that demonstrates warp-safe operations driven from Lua:
+
+```C++
+struct tutorial_warp_t {
+	iris_warp_t<iris_async_worker_t<>> stage_warp;
+	int warp_variable = 0;
+	int free_variable = 0;
+
+	tutorial_warp_t(iris_async_worker_t<>& worker) : stage_warp(worker) {}
+
+	static void lua_registar(iris_lua_t&& lua, std::nullptr_t) {
+		lua.set_current<&tutorial_warp_t::pipeline>("pipeline");
+		lua.set_current<&tutorial_warp_t::warp_variable>("warp_variable");
+		lua.set_current<&tutorial_warp_t::free_variable>("free_variable");
+	}
+
+	iris_coroutine_t<void> pipeline() {
+		// Switch to stage_warp — operations here are mutually exclusive
+		auto* current = co_await iris_switch(&stage_warp);
+		int v = warp_variable;
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		warp_variable = v + 1;
+		v = warp_variable;
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		warp_variable = v - 1;
+
+		// Detach from warp — operations here may run on any thread
+		co_await iris_switch(
+			static_cast<iris_warp_t<iris_async_worker_t<>>*>(nullptr));
+		int fv = free_variable;
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		free_variable = fv + 1;
+		fv = free_variable;
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		free_variable = fv - 1;
+
+		co_await iris_switch(current);  // switch back
+	}
+};
+```
+
+Spawn concurrent Lua coroutines all calling the same pipeline. The warp system guarantees `warp_variable` stays consistent (always 0 at the end), while `free_variable` may race:
+
+```lua
+local warp_obj = tutorial_warp_t.new()
+local running = coroutine.running()
+local complete_count = 0
+local loop_count = 20
+
+for i = 1, loop_count do
+    coroutine.wrap(function()
+        warp_obj:pipeline()           -- yields into C++ coroutine
+        complete_count = complete_count + 1
+        if complete_count == loop_count then
+            coroutine.resume(running)
+        end
+    end)()
+end
+
+if complete_count ~= loop_count then
+    coroutine.yield()  -- wait for all workers to complete
+end
+
+print("warp_variable = " .. tostring(warp_obj.warp_variable))  -- always 0
+print("free_variable = " .. tostring(warp_obj.free_variable))  -- may not be 0
+```
+
+### Resource Quotas from Lua
+
+Iristorm's quota system also integrates with Lua coroutines for resource-limited concurrency:
+
+```C++
+struct tutorial_quota_t {
+	iris_quota_t<size_t, 1> quota;
+	iris_quota_queue_t<iris_quota_t<size_t, 1>,
+		iris_warp_t<iris_async_worker_t<>>> quota_queue;
+
+	tutorial_quota_t(iris_async_worker_t<>& worker, size_t capacity)
+		: quota({ capacity }), quota_queue(worker, quota) {}
+
+	static void lua_registar(iris_lua_t&& lua, std::nullptr_t) {
+		lua.set_current<&tutorial_quota_t::pipeline>("pipeline");
+		lua.set_current<&tutorial_quota_t::get_remaining>("get_remaining");
+	}
+
+	size_t get_remaining() const noexcept { return quota.get()[0]; }
+
+	iris_coroutine_t<void> pipeline(size_t cost) {
+		auto* current = co_await iris_switch(
+			static_cast<iris_warp_t<iris_async_worker_t<>>*>(nullptr));
+
+		// Acquire quota — waits if insufficient
+		auto occupy = co_await quota_queue.guard({ cost });
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		co_await iris_switch(current);
+		// quota released automatically when `occupy` goes out of scope
+	}
+};
+```
+
+```lua
+local quota_obj = tutorial_quota_t.new()  -- capacity = 100
+local running = coroutine.running()
+local complete_count = 0
+
+for i = 1, 20 do
+    coroutine.wrap(function()
+        print("remaining: " .. tostring(quota_obj:get_remaining()))
+        quota_obj:pipeline(33)      -- each worker costs 33 units
+        complete_count = complete_count + 1
+        if complete_count == 20 then
+            coroutine.resume(running)
+        end
+    end)()
+end
+
+if complete_count ~= 20 then
+    coroutine.yield()
+end
+```
+
+At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait for one to finish.
+
+## Files
+
+| File | Description |
+|------|-------------|
+| [src/iris_common.h](src/iris_common.h) | Common types, macros, and utilities |
+| [src/iris_dispatcher.h](src/iris_dispatcher.h) | Warp system, async worker, and DAG dispatcher |
+| [src/iris_coroutine.h](src/iris_coroutine.h) | C++20 coroutine support (awaitable, switch, barrier, event, quota) |
+| [src/iris_lua.h](src/iris_lua.h) | Lua binding system |
+| [src/iris_system.h](src/iris_system.h) | System integration utilities |
+| [src/iris_tree.h](src/iris_tree.h) | Tree data structures |
+| [test/iris_dispatcher_demo.cpp](test/iris_dispatcher_demo.cpp) | Warp system and DAG dispatcher examples |
+| [test/iris_coroutine_demo.cpp](test/iris_coroutine_demo.cpp) | C++ coroutine examples |
+| [test/iris_lua_demo.cpp](test/iris_lua_demo.cpp) | Lua binding examples |
+| [tutorial/lua_co_await/](tutorial/lua_co_await/) | Full Lua + coroutine integration tutorial |
 
