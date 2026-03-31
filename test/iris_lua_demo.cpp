@@ -173,12 +173,12 @@ struct example_t : example_base_t {
 #endif
 	}
 
-	static void lua_coroutine_begin(lua_t lua, example_t* self) {
-		printf("lua_coroutine_begin\n");
+	static void lua_method_begin(lua_t lua, example_t* self, bool is_coroutine) {
+		printf("lua_method_begin %d\n", is_coroutine);
 	}
 
-	static void lua_coroutine_end(lua_t lua, example_t* self) {
-		printf("lua_coroutine_end\n");
+	static void lua_method_end(lua_t lua, example_t* self, bool is_coroutine) {
+		printf("lua_coroutine_end %d\n", is_coroutine);
 	}
 
 	example_t() noexcept {}
