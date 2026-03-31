@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--dependency-file=CMakeFiles/iris_system_demo.dir/link.d CMakeFiles/iris_system_demo.dir/test/iris_system_demo.cpp.o -o iris_system_demo  -lm -lstdc++ -lpthread

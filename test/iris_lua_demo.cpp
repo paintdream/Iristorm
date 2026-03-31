@@ -943,6 +943,31 @@ static void test_coroutines(lua_t lua) {
 #endif
 }
 
+static void test_metamethod_protection(lua_t lua) {
+	// Test that setting a metatable on the global table with __index/__newindex
+	// that throws errors does not crash the application.
+	// This verifies that get_global/set_global use raw table access.
+	auto result = lua.call<void>(lua.load("\n\
+		setmetatable(_G, {\n\
+			__index = function(t, k) error('malicious __index!') end,\n\
+			__newindex = function(t, k, v) error('malicious __newindex!') end\n\
+		})\n").value());
+
+	// get_global and set_global should still work because they use raw access
+	lua.set_global("test_meta_value", 42);
+	auto val = lua.get_global<int>("test_meta_value");
+	IRIS_ASSERT(val.value() == 42);
+
+	// systrap should also work (uses raw_getglobal internally)
+	// trigger a systrap by causing a pcall error
+	auto err_result = lua.call<void>(lua.load("error('test error')").value());
+	IRIS_ASSERT(!err_result);
+
+	// clean up: remove the malicious metatable
+	auto cleanup = lua.call<void>(lua.load("setmetatable(_G, nil)").value());
+	IRIS_ASSERT(cleanup);
+}
+
 int main(void) {
 	lua_State* L = luaL_newstate();
 	luaL_openlibs(L);
@@ -951,6 +976,7 @@ int main(void) {
 	test_overload_cast(lua);
 	test_registry_types(lua);
 	test_functions(lua);
+	test_metamethod_protection(lua);
 	test_cross_vm(lua);
 	test_encode(lua);
 	test_bindings(lua);

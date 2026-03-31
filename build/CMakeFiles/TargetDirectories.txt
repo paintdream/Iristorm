@@ -1,9 +1,0 @@
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/iris_dispatcher_demo.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/iris_system_demo.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/iris_tree_demo.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/iris_coroutine_demo.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/iris_engine_demo.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/iris_lua_demo.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/test.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/edit_cache.dir
-/home/runner/work/Iristorm/Iristorm/build/CMakeFiles/rebuild_cache.dir

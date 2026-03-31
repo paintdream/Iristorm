@@ -166,6 +166,32 @@ namespace iris {
 			return iris_lua_t::syserror(state, category, format, std::forward<args_t>(args)...);
 		}
 
+		// raw access to global table without triggering metamethods
+		static void raw_getglobal(lua_State* L, const char* name) {
+#if LUA_VERSION_NUM >= 502
+			lua_pushglobaltable(L);
+#else
+			lua_pushvalue(L, LUA_GLOBALSINDEX);
+#endif
+			lua_pushstring(L, name);
+			lua_rawget(L, -2);
+			lua_remove(L, -2);
+		}
+
+		static void raw_setglobal(lua_State* L, const char* name) {
+			// assumes value is on top of stack
+#if LUA_VERSION_NUM >= 502
+			lua_pushglobaltable(L);
+#else
+			lua_pushvalue(L, LUA_GLOBALSINDEX);
+#endif
+			lua_insert(L, -2);
+			lua_pushstring(L, name);
+			lua_insert(L, -2);
+			lua_rawset(L, -3);
+			lua_pop(L, 1);
+		}
+
 		// systrap is a low level error-capturing machanism
 		// usually you can get errors from result_error_t when calling lua
 		// but in LuaJIT and Lua 5.1, it is impossible to retrieve errors from C-lua mixed coroutines
@@ -173,7 +199,7 @@ namespace iris {
 		template <typename... args_t>
 		static void systrap(lua_State* L, const char* category, const char* format, args_t&&... args) {
 			stack_guard_t stack_guard(L);
-			lua_getglobal(L, "__iris_systrap__");
+			raw_getglobal(L, "__iris_systrap__");
 
 			if (lua_type(L, -1) == LUA_TFUNCTION) {
 				lua_pushstring(L, category);
@@ -1441,7 +1467,7 @@ namespace iris {
 			lua_State* L = state;
 			stack_guard_t stack_guard(L);
 
-			lua_getglobal(L, key.data() == nullptr ? "" : key.data());
+			raw_getglobal(L, key.data() == nullptr ? "" : key.data());
 			if (!check_required_parameters<value_t>(L, 0, 0, false, lua_gettop(L), false)) {
 				lua_pop(L, 1);
 				return result_error_t("unable to get variable.");
@@ -1460,7 +1486,7 @@ namespace iris {
 			lua_State* L = state;
 			stack_guard_t stack_guard(L);
 			reflection_t reflection = push_variable(L, std::forward<value_t>(value), std::forward<envs_t>(envs)...);
-			lua_setglobal(L, key.data());
+			raw_setglobal(L, key.data());
 
 			return reflection;
 		}
@@ -1472,7 +1498,7 @@ namespace iris {
 			lua_State* L = state;
 			stack_guard_t stack_guard(L);
 			reflection_t reflection = push_variable<value_t, type_t>(L, std::forward<envs_t>(envs)...);
-			lua_setglobal(L, key.data());
+			raw_setglobal(L, key.data());
 
 			return reflection;
 		}
@@ -3739,7 +3765,7 @@ namespace iris {
 #if LUA_VERSION_NUM >= 502
 								lua_pushglobaltable(T);
 #else
-								lua_getglobal(T, "_G");
+								lua_pushvalue(T, LUA_GLOBALSINDEX);
 #endif
 							} else {
 								recursion_index = cross_transfer_variable<false>(L, target, -1, recursion_source, recursion_target, recursion_index);

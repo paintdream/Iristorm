@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -Wl,--dependency-file=CMakeFiles/iris_dispatcher_demo.dir/link.d CMakeFiles/iris_dispatcher_demo.dir/test/iris_dispatcher_demo.cpp.o -o iris_dispatcher_demo  -lm -lstdc++ -lpthread
