@@ -3201,6 +3201,14 @@ namespace iris {
 				} else {
 					coroutine.complete([=](void* address) {
 						IRIS_PROFILE_SCOPE(__FUNCTION__);
+						
+						if constexpr (use_this) {
+							using this_type = std::remove_pointer_t<typename std::tuple_element_t<0, std::tuple<args_t...>>::required_type_t>;
+							if constexpr (has_lua_method_end<this_type>::value) {
+								this_type::lua_method_end(iris_lua_t(L), reinterpret_cast<this_type*>(self), true);
+							}
+						}
+						
 						lua_pushnil(L);
 						push_variable(L, address);
 						coroutine_continuation(L, 1, address);
