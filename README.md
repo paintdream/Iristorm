@@ -22,7 +22,7 @@ Iristorm is an extensible asynchronous **header-only** framework written in pure
 - [Lua Binding](#lua-binding)
   - [Registering a Type](#registering-a-type)
   - [Custom Type Conversion](#custom-type-conversion)
-  - [Inheritance and CRTP](#inheritance-and-crtp)
+  - [Inheritance](#inheritance)
   - [Overloaded Methods](#overloaded-methods)
   - [Working with Tables and References](#working-with-tables-and-references)
   - [Calling Lua from C++](#calling-lua-from-c)
@@ -594,7 +594,7 @@ struct example_base_t : crtp_t<example_base_t> {
 
 	template <typename traits_t>
 	static void lua_registar(iris_lua_t lua, traits_t) {
-		// Must specify the derived type for CRTP members
+		// Must specify the derived type for members
 		lua.set_current<&example_base_t::crtp_foo, example_base_t>("crtp_foo");
 		lua.set_current<&example_base_t::crtp_member, example_base_t>("crtp_member");
 		lua.set_current<&example_base_t::base_value>("base_value");
