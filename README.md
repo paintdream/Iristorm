@@ -37,12 +37,12 @@ Iristorm is an extensible asynchronous **header-only** framework written in pure
 
 Iristorm is header-only. The only thing you need to do is to include the corresponding header files.
 
-Most of Iristorm classes works with C++ 11 compatible compilers, except some optional features: 
+Most Iristorm classes work with C++11-compatible compilers, except for some optional features:
 
-* Lua Binding support requires C++ 17 if-constexpr feature. (Visual Studio 2017+, GCC 7+, Clang 3.9+)
-* Coroutine support for thread pool scheduler requires C++ 20 standard coroutine feature. (Visual Studio 2019+, GCC 11+, Clang 14+)
+* Lua Binding support requires the C++17 if-constexpr feature. (Visual Studio 2017+, GCC 7+, Clang 3.9+)
+* Coroutine support for the thread pool scheduler requires the C++20 standard coroutine feature. (Visual Studio 2019+, GCC 11+, Clang 14+)
 
-All examples could be built by [CMake build system](https://cmake.org/), see CMakeLists.txt for more details.
+All examples can be built by [CMake build system](https://cmake.org/), see CMakeLists.txt for more details.
 
 ## License
 
@@ -54,33 +54,33 @@ Iristorm provides a simple M:N task scheduler called **Warp System** which is in
 
 #### Task
 
-A task is the **logical** executing unit in concept of application development. Usually it is represented by a function pointer. 
+A task is the **logical** execution unit in the concept of application development. Usually it is represented by a function pointer.
 
 #### Thread
 
 A thread is a **native** execution unit provided by operating system. **Tasks must be run in threads**. Different threads are considered to be possibly running at the same time.
 
-**Multi-threading**, which aims to run several threads within a program, is an effective approach to making full use of CPUs in many-core system. Usually it's very hard to code and debug. Therefore, there are many data structures, programming patterns and frameworks to simplify coding process and make it easier for developers. This project is one of them.
+**Multi-threading**, which aims to run several threads within a program, is an effective approach to making full use of CPUs in many-core systems. Usually it's very hard to code and debug. Therefore, there are many data structures, programming patterns, and frameworks to simplify the coding process and make it easier for developers. This project is one of them.
 
 #### Thread Pool
 
-Threads are heavy. It is not efficient to run every task by invoking a brand-new thread. Thread pool is a type of multi-threading framework that could make it more efficient. Thread pool maintains a set of threads called "Worker Thread" **reused** for running tasks. When a new task are required to be run, the thread pool could schedule it to a proper worker thread if there were idled one, or queue it until any worker became idle.
+Threads are heavy. It is not efficient to run every task by invoking a brand-new thread. A thread pool is a type of multi-threading framework that can make this more efficient. A thread pool maintains a set of threads called "Worker Threads" **reused** for running tasks. When a new task is required to be run, the thread pool can schedule it to a proper worker thread if there is an idle one, or queue it until any worker becomes idle.
 
 #### Warp
 
 Some tasks are going to read/write at the same objects, or visiting the same thread-unsafe interfaces, indicating that they are not able to run at the same time. See [RACE Condition](https://en.wikipedia.org/wiki/Race_condition) for details. Here we just call them **conflicting** tasks.
 
-To make our programs run correctly, we must establish some techniques prevent unexpected conflicts. Here introduce a new concept: **Warp**.
+To make our programs run correctly, we must establish some techniques to prevent unexpected conflicts. Here we introduce a new concept: **Warp**.
 
-A warp is a logical container of series conflicting tasks. Tasks belong to the **same warp** are granted to be **mutexed** automatically and thus **neither two of them** can be run at the same time, avoiding race-conditions prospectively. This feature is called **warp restriction**. To make coding easier, we could bind all tasks about a specified object into a specific warp. In this case, we call that this object is totally bound to a warp context.
+A warp is a logical container of a series of conflicting tasks. Tasks belonging to the **same warp** are guaranteed to be **mutually exclusive** automatically, and thus **no two of them** can be run at the same time, avoiding race conditions proactively. This feature is called **warp restriction**. To make coding easier, we can bind all tasks related to a specific object to a specific warp. In this case, we say that this object is fully bound to a warp context.
 
 Besides, tasks among **different** warps **can** be run at the same time respectively.
 
 #### Warp System
 
-The Warp System is a bridge between **warps** and **thread pool**. That is, programmers commit tasks labeled by warp to the system, then the latter schedule them to a thread pool. With some magic techniques applied internally, we finally construct a conflict-free task flow.
+The Warp System is a bridge between **warps** and the **thread pool**. That is, programmers commit tasks labeled by warp to the system, which then schedules them to a thread pool. With some magic techniques applied internally, we finally construct a conflict-free task flow.
 
-The thread count **M** of Warp System is **fixed** when it starts. But the warp count **N** can be dynamically adjusted by programmers freely. So the warp system is a type of flexible M:N task mapping system.
+The thread count **M** of Warp System is **fixed** when it starts. But the warp count **N** can be dynamically adjusted by programmers at will. So the warp system is a type of flexible M:N task mapping system.
 
 ## Quick Start
 
@@ -88,7 +88,7 @@ Let's start with simple programs in [iris_dispatcher_demo.cpp](test/iris_dispatc
 
 #### Basic Example: simple explosion
 
-The Warp System runs on a thread pool, and the first thing is to create it. There is a built-in thread pool written in C++ 11 std::thread in [iris_dispatcher.h](src/iris_dispatcher.h), you can replace it with your own platform-correlated implementation.
+The Warp System runs on a thread pool, and the first step is to create it. There is a built-in thread pool written in C++11 std::thread in [iris_dispatcher.h](src/iris_dispatcher.h), you can replace it with your own platform-specific implementation.
 
 ```C++
 static const size_t thread_count = 4;
@@ -97,7 +97,7 @@ iris_async_worker_t<> worker(thread_count);
 
 Then we initialize the warps. There is no "warp system class". Each warp is **individual**, just create a vector of them. We call them warp 0, warp 1, etc. 
 
-Different from boost strands, the tasks in a warp are **NOT** ordered by default, which means the **final execution order** is not the same order of committing. You can still enable ordering as you like anyway (see declaration of "strand_t" as following code), which is not recommended because ordering may be slightly inefficient than default setting.
+Different from boost strands, the tasks in a warp are **NOT** ordered by default, which means the **final execution order** is not the same as the order of committing. You can still enable ordering as you like anyway (see declaration of "strand_t" in the following code), which is not recommended because ordering may be slightly less efficient than the default setting.
 
 ```C++
 static const size_t warp_count = 8;
@@ -111,7 +111,7 @@ for (size_t i = 0; i < warp_count; i++) {
 }
 ```
 
-Then we can schedule a task into the warp you want. Just call **queue_routine**. 
+Then we can schedule a task into the warp you want. Just call **queue_routine**.
 
 ```C++
 warps[0].queue_routine([]() {/* operations on warps[0] */});
@@ -169,19 +169,19 @@ explosion = [&warps, &explosion, &worker]() {
 };
 ```
 
-Though there is no locks or atomics on operating warp_data, we can still assert that the final value of each warp_data must be 0. The execution of the same warp never overlap in time-line.
+Though there are no locks or atomics on operating warp_data, we can still assert that the final value of each warp_data must be 0. The execution of the same warp never overlaps in the timeline.
 
 #### Advanced Example: garbage collection
 
-There is a function named garbage_collection, which simulates a multi-threaded mark-sweep [garbage collection](http://en.wikipedia.org/wiki/Garbage_collection_(computer_science) ) process. 
+There is a function named garbage_collection, which simulates a multi-threaded mark-sweep [garbage collection](http://en.wikipedia.org/wiki/Garbage_collection_(computer_science) ) process.
 
 Garbage collection is a technique for collecting unreferenced objects and deleting them. Mark-sweep is a basic approach for garbage collection. It contains three steps:
 
 1. Scanning all objects and mark them **unvisited**.
 2. Traverse from root objects through reference relationships, mark all objects that can be directly or indirectly referenced to **visited**.
-3. Rescanning all objects, delete the objects with **unvisited** mark. Thus all objects that not linked with root objects (i.e. garbage) are deleted.
+3. Rescanning all objects, delete the objects with **unvisited** mark. Thus all objects that are not linked to root objects (i.e. garbage) are deleted.
 
-Now suppose we got the definition of basic object node as followed:
+Now suppose we got the definition of basic object node as follows:
 
 ```C++
 struct node_t {
@@ -197,11 +197,11 @@ struct graph_t {
 
 To apply garbage collection, we need to record every **references** from the current node, and traverse them from root object as collecting. We use **visit_count** to record whether the current node is **visited**.
 
-If you are experienced in multi-threaded programming, you may figure out that **visit_count** should be of type std::atomic<size_t> because there may be several threads performing modification during collecting progress.
+If you are experienced in multi-threaded programming, you may figure out that **visit_count** should be of type std::atomic<size_t> because there may be several threads performing modification during the collection process.
 
 But we have decided to make things different.
 
-We are splitting the node visiting operations into multiple warps (recorded by member **warp_index**). For example, node 1-10 are grouped into warp 0, node 11-20 are grouped into warp 1, or just randomly assigned. Any task operations on the nodes in the same warp will be protected by warp system. As a result, the variable **visit_count** is granted to **never** operated by multiple-threads and no atomic or locks are required.
+We are splitting the node visiting operations into multiple warps (recorded by member **warp_index**). For example, node 1-10 are grouped into warp 0, node 11-20 are grouped into warp 1, or just randomly assigned. Any task operations on the nodes in the same warp will be protected by the warp system. As a result, the variable **visit_count** is guaranteed to **never** be operated on by multiple threads, and no atomics or locks are required.
 
 In order to obey the warp restriction, all we need to do is to invoke a task with related node's warp when we are planning to do something on it:
 
@@ -244,17 +244,17 @@ collector = [&warps, &collector, &worker, &graph, &collecting_count](size_t node
 };
 ```
 
-That's all, there would be **no** explicit locks and atomics. All dangerous multi-threaded works are done by Warp System. See the full source code of garbage_collection for more details.
+That's all, there are **no** explicit locks or atomics. All dangerous multi-threaded work is done by the Warp System. See the full source code of garbage_collection for more details.
 
 #### Discussion
 
 Now let's get back to the beginning, what's the meaning of warps? What if we just use atomics or locks?
 
-The answer contains three aspects: 
+The answer contains three aspects:
 
-1. Convenient: The only thing you must remember is the rule that **always schedule task according to warp**. There is no lock-order requirement, dead-locking, busy-waiting, memory order problem and atomic myths.
-2. High performance: If we abuse locks and atomics everywhere, for example, allocating separate locks on each object, do locks or atomic operations as long as we need to visit objects, then the program will stuck on bus-locking, kernel-switching and thread-switching, which lead to low performance issues. The warp concept wraps a series of operations or a mount of objects into a logical "scheduling package", reducing switching cost and busy-wait cost, making them more friendly for multi-thread systems.
-3. Flexible: you could easily adjust the object/task warping rules as you like. For example, allocating more warps and splitting objects with smaller granularity if you have more CPUs. The system allows programmers to transport a object or a group of tasks from one warp to another dynamically, if they are working on some dynamic overload balancing features. 
+1. Convenient: The only thing you must remember is the rule that **always schedule tasks according to warp**. There is no lock-order requirement, dead-locking, busy-waiting, memory order problem, or atomic myths.
+2. High performance: If we abuse locks and atomics everywhere, for example, allocating separate locks on each object, performing lock or atomic operations whenever we need to access objects, then the program will get stuck on bus-locking, kernel-switching, and thread-switching, which leads to low performance. The warp concept wraps a series of operations or a number of objects into a logical "scheduling package", reducing switching cost and busy-wait cost, making them more friendly for multi-threaded systems.
+3. Flexible: You can easily adjust the object/task warping rules as you like. For example, allocating more warps and splitting objects with smaller granularity if you have more CPUs. The system allows programmers to transport an object or a group of tasks from one warp to another dynamically, if they are working on some dynamic load-balancing features.
 
 
 
@@ -262,9 +262,9 @@ The answer contains three aspects:
 
 ### In-Warp Parallel
 
-In common case, there is only one thread running in a warp context. But what if we want to break the rule temporarily by local code and do some parallelized operations with warp restriction holding for other code? I know it's unsafe, but I just want to do it.
+In the common case, there is only one thread running in a warp context. But what if we want to break the rule temporarily by local code and do some parallelized operations while the warp restriction is held for other code? I know it's unsafe, but I just want to do it.
 
-Open the [iris_dispatcher_demo.cpp](test/iris_dispatcher_demo.cpp) and you could find a piece of code in function "simple_explosion":
+Open the [iris_dispatcher_demo.cpp](test/iris_dispatcher_demo.cpp) and you can find a piece of code in function "simple_explosion":
 
 ```C++
 static constexpr size_t parallel_factor = 11;
@@ -283,15 +283,15 @@ if (rand() % parallel_factor == 0) {
 }
 ```
 
-The function **queue_routine_parallel** invokes a special parallelized task on current_warp, which can be run at the same time. As one parallelized task running, other normal tasks on current_warp remains to be **blocked**. After all parallelized task finishes, the normal tasks then could to be scheduled.
+The function **queue_routine_parallel** invokes a special parallelized task on current_warp, which can be run at the same time. While a parallelized task is running, other normal tasks on current_warp remain **blocked**. After all parallelized tasks finish, the normal tasks can then be scheduled.
 
-**Parallelized tasks to normal tasks is what read locks to write locks**. It's an advanced feature and you must be careful when use them.
+**Parallelized tasks to normal tasks is what read locks to write locks**. It's an advanced feature and you must be careful when using them.
 
 ### Coroutines
 
-In C++ 20, we can use coroutines to simplify asynchronous program development.
+In C++20, we can use coroutines to simplify asynchronous program development.
 
-Warp system supports coroutines integration, you could find an example at [iris_coroutine_demo.cpp](test/iris_coroutine_demo.cpp):
+Warp system supports coroutine integration, you can find an example at [iris_coroutine_demo.cpp](test/iris_coroutine_demo.cpp):
 
 To start with a coroutine, just write a function with return value type `iris_coroutine_t`:
 
@@ -299,7 +299,7 @@ To start with a coroutine, just write a function with return value type `iris_co
 iris_coroutine_t<return_type> example(warp_t::async_worker_t& async_worker, warp_t* warp, int value) {}
 ```
 
-In this coroutine function, you could await call **iris_switch** to switch to another warp context:
+In this coroutine function, you can `co_await` **iris_switch** to switch to another warp context:
 
 ```C++
 if (warp != nullptr) {
@@ -314,9 +314,9 @@ if (warp != nullptr) {
 }
 ```
 
-`co_await iris_switch` returns previous warp. Notice that we can switch to a `nullptr` warp, which means that we are planning to detach from current warp. Switching from `nullptr` warp to a valid warp is also allowed respectively.
+`co_await iris_switch` returns the previous warp. Notice that we can switch to a `nullptr` warp, which means that we want to detach from the current warp. Switching from a `nullptr` warp to a valid warp is also allowed.
 
-And we can create and wait an asynchronized task on target warp:
+And we can create and wait for an asynchronous task on the target warp:
 
 ```C++
 co_await iris_awaitable(warp, []() {});
@@ -382,7 +382,7 @@ Additional coroutine utilities include:
 
 ### DAG-based Task Dispatcher
 
-DAG-based Task Dispatcher, also well-known as Task Graph, is widely used task dispatching techniques for tasks with partial order dependency.
+DAG-based Task Dispatcher, also well-known as Task Graph, is a widely used task dispatching technique for tasks with partial order dependency.
 
 We also provide a DAG-based Task Dispatcher called iris_dispatcher_t (see function "graph_dispatch" at [iris_dispatcher_demo](test/iris_dispatcher_demo.cpp)):
 
@@ -402,7 +402,7 @@ auto a = dispatcher.allocate(&warps[0], []() { std::cout << "Warp 0 task [1]" <<
 auto b = dispatcher.allocate(&warps[1], []() { std::cout << "Warp 1 task [2]" << std::endl; });
 ```
 
-Notice that there is a return value with internal type routine_t*. You could call **order** function to order them later. 
+Notice that there is a return value with internal type routine_t*. You can call the **order** function to order them later.
 
 ```C++
 dispatcher.order(a, b);
@@ -414,7 +414,7 @@ dispatcher.order(b, c);
 dispatcher.order(b, d);
 ```
 
-Then call **dispatch** to run them. 
+Then call **dispatch** to run them.
 
 ```C++
 dispatcher.dispatch(a);
@@ -423,7 +423,7 @@ dispatcher.dispatch(c);
 dispatcher.dispatch(d);
 ```
 
-To dispatch more flexible, you can **defer/dispatch** a task dynamically. Notice that **defer** must be called during dispatcher running and **BEFORE** target task actually runs.
+To dispatch more flexibly, you can **defer/dispatch** a task dynamically. Notice that **defer** must be called during dispatcher running and **BEFORE** the target task actually runs.
 
 ```c++
 auto b = dispatcher.allocate(&warps[1], [&dispatcher, d]() {
@@ -435,7 +435,7 @@ auto b = dispatcher.allocate(&warps[1], [&dispatcher, d]() {
 
 ### Polling from External Thread
 
-It is a common case that a thread has to be blocked to wait for some signals arrive. For example, suppose you are spinning to wait an atomic variable to be expected value (spin lock, for example), and there are nothing to be done but to spin. In this case, we can try to "borrow" some tasks from thread pool and executing them if our atomic variable is not ready yet.
+It is a common case that a thread has to be blocked to wait for some signals to arrive. For example, suppose you are spinning to wait for an atomic variable to reach the expected value (spin lock, for example), and there is nothing to do but spin. In this case, we can try to "borrow" some tasks from the thread pool and execute them if our atomic variable is not ready yet.
 
 ```C++
 while (some_variable.load(std::memory_order_acquire) != expected_value) {
@@ -444,7 +444,7 @@ while (some_variable.load(std::memory_order_acquire) != expected_value) {
 }
 ```
 
-### Exiting 
+### Exiting
 
 Use iris_warp_t::poll to poll all tasks from all warps (including their async_worker's tasks) while exiting.
 
