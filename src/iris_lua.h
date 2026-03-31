@@ -2504,7 +2504,7 @@ namespace iris {
 			if constexpr (iris_is_coroutine<return_t>::value) {
 				return function_coroutine_proxy_dispatch<decltype(adapter), true, return_t, required_t<type_t*>&&, args_t...>(L, adapter, 0);
 			} else {
-				return function_proxy_dispatch<decltype(adapter), return_t, required_t<type_t*>&&, args_t...>(L, adapter, 0, true);
+				return function_proxy_dispatch<decltype(adapter), true, return_t, required_t<type_t*>&&, args_t...>(L, adapter, 0);
 			}
 		}
 
@@ -2523,7 +2523,7 @@ namespace iris {
 			if constexpr (iris_is_coroutine<return_t>::value) {
 				return function_coroutine_proxy_dispatch<function_t, false, return_t, args_t...>(L, function, 0);
 			} else {
-				return function_proxy_dispatch<function_t, return_t, args_t...>(L, function, 0, false);
+				return function_proxy_dispatch<function_t, false, return_t, args_t...>(L, function, 0);
 			}
 		}
 
@@ -3080,8 +3080,8 @@ namespace iris {
 			}
 		}
 
-		template <typename function_t, typename return_t, typename... args_t>
-		static int function_proxy_dispatch(lua_State* L, const function_t& function, int env_count, bool use_this) {
+		template <typename function_t, bool use_this, typename return_t, typename... args_t>
+		static int function_proxy_dispatch(lua_State* L, const function_t& function, int env_count) {
 			if constexpr (sizeof...(args_t) > 0) {
 				if (!check_required_parameters<args_t...>(L, env_count, 0, use_this, 1, false)) {
 					auto func = lua_tocfunction(L, lua_upvalueindex(1));
@@ -3092,8 +3092,23 @@ namespace iris {
 					}
 				}
 			}
-
+			
+			if constexpr (use_this) {
+				using this_type = std::remove_pointer_t<typename std::remove_reference_t<std::tuple_element_t<0, std::tuple<args_t...>>>::required_type_t>;
+				if constexpr (has_lua_method_begin<this_type>::value) {
+					this_type::lua_method_begin(iris_lua_t(L), get_variable<this_type*, true>(L, 1), false);
+				}
+			}
+			
 			int ret = function_invoke<function_t, 0, return_t, std::tuple<cast_arg_type_t<args_t>...>>(L, function, env_count, use_this, 1);
+
+			if constexpr (use_this) {
+				using this_type = std::remove_pointer_t<typename std::remove_reference_t<std::tuple_element_t<0, std::tuple<args_t...>>>::required_type_t>;
+				if constexpr (has_lua_method_end<this_type>::value) {
+					this_type::lua_method_end(iris_lua_t(L), get_variable<this_type*, true>(L, 1), false);
+				}
+			}
+			
 			if (ret < 0) {
 				syserror(L, "error.exec", "C-function execution error: %s\n", luaL_optstring(L, -1, ""));
 			}
@@ -3103,7 +3118,7 @@ namespace iris {
 
 		template <auto function, typename return_t, int env_count, bool use_this, typename... args_t>
 		static int function_proxy(lua_State* L) {
-			return function_proxy_dispatch<decltype(function), return_t, args_t...>(L, function, env_count, use_this);
+			return function_proxy_dispatch<decltype(function), use_this, return_t, args_t...>(L, function, env_count);
 		}
 
 		static constexpr int coroutine_state_yield = -1;
@@ -3138,7 +3153,7 @@ namespace iris {
 				void* self = nullptr;
 				if constexpr (use_this) {
 					using this_type = std::remove_pointer_t<typename std::remove_reference_t<std::tuple_element_t<0, std::tuple<args_t...>>>::required_type_t>;
-					if constexpr (has_lua_coroutine_end<this_type>::value) {
+					if constexpr (has_lua_method_end<this_type>::value) {
 						self = get_variable<this_type*, true>(L, 1);
 					}
 				}
@@ -3151,8 +3166,8 @@ namespace iris {
 						
 						if constexpr (use_this) {
 							using this_type = std::remove_pointer_t<typename std::tuple_element_t<0, std::tuple<args_t...>>::required_type_t>;
-							if constexpr (has_lua_coroutine_end<this_type>::value) {
-								this_type::lua_coroutine_end(iris_lua_t(L), reinterpret_cast<this_type*>(self));
+							if constexpr (has_lua_method_end<this_type>::value) {
+								this_type::lua_method_end(iris_lua_t(L), reinterpret_cast<this_type*>(self), true);
 							}
 						}
 
@@ -3255,16 +3270,16 @@ namespace iris {
 		}
 #endif
 		template <typename type_t, typename = void>
-		struct has_lua_coroutine_begin : std::false_type {};
+		struct has_lua_method_begin : std::false_type {};
 
 		template <typename type_t>
-		struct has_lua_coroutine_begin<type_t, iris_void_t<decltype(iris_lua_traits_t<type_t>::type::lua_coroutine_begin(std::declval<iris_lua_t>(), std::declval<type_t*>()))>> : std::true_type {};
+		struct has_lua_method_begin<type_t, iris_void_t<decltype(iris_lua_traits_t<type_t>::type::lua_method_begin(std::declval<iris_lua_t>(), std::declval<type_t*>(), true))>> : std::true_type {};
 
 		template <typename type_t, typename = void>
-		struct has_lua_coroutine_end : std::false_type {};
+		struct has_lua_method_end : std::false_type {};
 
 		template <typename type_t>
-		struct has_lua_coroutine_end<type_t, iris_void_t<decltype(iris_lua_traits_t<type_t>::type::lua_coroutine_end(std::declval<iris_lua_t>(), std::declval<type_t*>()))>> : std::true_type {};
+		struct has_lua_method_end<type_t, iris_void_t<decltype(iris_lua_traits_t<type_t>::type::lua_method_end(std::declval<iris_lua_t>(), std::declval<type_t*>(), true))>> : std::true_type {};
 
 		template <typename function_t, bool use_this, typename coroutine_t, typename... args_t>
 		static int function_coroutine_proxy_dispatch(lua_State* L, const function_t& function, int env_count) {
@@ -3281,8 +3296,8 @@ namespace iris {
 
 			if constexpr (use_this) {
 				using this_type = std::remove_pointer_t<typename std::remove_reference_t<std::tuple_element_t<0, std::tuple<args_t...>>>::required_type_t>;
-				if constexpr (has_lua_coroutine_begin<this_type>::value) {
-					this_type::lua_coroutine_begin(iris_lua_t(L), get_variable<this_type*, true>(L, 1));
+				if constexpr (has_lua_method_begin<this_type>::value) {
+					this_type::lua_method_begin(iris_lua_t(L), get_variable<this_type*, true>(L, 1), true);
 				}
 			}
 
