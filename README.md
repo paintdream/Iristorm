@@ -18,6 +18,7 @@ Iristorm is an extensible asynchronous **header-only** framework written in pure
   - [Coroutines](#coroutines)
   - [DAG-based Task Dispatcher](#dag-based-task-dispatcher)
   - [Polling from External Thread](#polling-from-external-thread)
+  - [Warp Priority and Task Priority](#warp-priority-and-task-priority)
   - [Exiting](#exiting)
 - [Lua Binding](#lua-binding)
   - [Registering a Type](#registering-a-type)
@@ -26,6 +27,7 @@ Iristorm is an extensible asynchronous **header-only** framework written in pure
   - [Overloaded Methods](#overloaded-methods)
   - [Working with Tables and References](#working-with-tables-and-references)
   - [Calling Lua from C++](#calling-lua-from-c)
+  - [Object Holding: Placement vs View](#object-holding-placement-vs-view)
 - [Lua Coroutine Integration](#lua-coroutine-integration)
   - [Exposing Coroutine Methods to Lua](#exposing-coroutine-methods-to-lua)
   - [Async Wait from Lua](#async-wait-from-lua)
@@ -444,6 +446,92 @@ while (some_variable.load(std::memory_order_acquire) != expected_value) {
 }
 ```
 
+### Warp Priority and Task Priority
+
+Iristorm supports a priority system that controls the scheduling order of tasks in the thread pool. There are two levels of priority: **warp priority** and **task priority**. Together they allow fine-grained control over which tasks get executed first when multiple tasks are competing for worker threads.
+
+#### Task Priority
+
+The thread pool (`iris_async_worker_t`) organizes its internal task queues by priority levels ranging from **0** to **thread_count - 1**, where **0 is the highest priority**. When a worker thread looks for the next task to execute, it scans from the highest priority (0) downward, so higher-priority tasks are always picked up first.
+
+You can queue a task with a specific priority directly:
+
+```C++
+// Queue a task with priority 0 (highest)
+worker.queue([]() { /* critical work */ }, 0);
+
+// Queue a task with priority 2 (lower)
+worker.queue([]() { /* background work */ }, 2);
+```
+
+Priority also affects thread wake-up behavior. When a task is queued at priority level P, only a waiting thread whose index satisfies `waiting_thread_count > P + limit_count` will be woken up. This means higher-priority tasks are more aggressive at waking idle threads, while lower-priority tasks may wait for an already-running thread to pick them up naturally. This avoids unnecessary context switches for low-priority work.
+
+When polling tasks from an external thread, you can specify the maximum priority level to poll:
+
+```C++
+// Poll tasks with priority 0 only (highest priority)
+worker.poll_one(0);
+
+// Poll tasks with priority up to 2
+worker.poll_one(2);
+
+// Poll with timeout
+worker.poll_one(0, std::chrono::milliseconds(20));
+```
+
+The internal worker threads use an automatic priority scheme: the more threads that are currently running, the lower the effective priority each thread polls at. This is controlled by `running_count` — the first thread to start polling gets the highest effective priority (can see all tasks), while subsequent threads see progressively fewer priority levels. This naturally load-balances work and prevents low-priority tasks from starving when there is heavy contention.
+
+#### Warp Priority
+
+Each warp has a **fixed priority** that is set at construction time:
+
+```C++
+// Create a warp with default priority 0 (highest)
+warp_t high_priority_warp(worker);
+
+// Create a warp with priority 2 (lower)
+warp_t low_priority_warp(worker, 2);
+```
+
+When a warp flushes its pending tasks to the thread pool, it uses its own priority value. This means **all tasks queued to a warp inherit the warp's priority level**. A warp with priority 0 will have its tasks scheduled before tasks from a warp with priority 2, assuming both are competing for the same worker threads.
+
+Warp priority affects three scheduling paths:
+1. **Normal task flushing**: When the warp's internal queue is flushed via `queue_routine`, the flush operation is dispatched to the thread pool with the warp's priority.
+2. **Parallel task dispatching**: When parallel tasks (via `queue_routine_parallel`) are sent to the thread pool, they also use the warp's priority.
+3. **External thread submissions**: When a task is submitted from a non-worker thread, it is queued to the thread pool directly with the warp's priority.
+
+#### Task Priority in DAG Dispatcher
+
+The DAG-based task dispatcher (`iris_dispatcher_t`) also supports per-task priority. However, **task priority only takes effect for tasks with no associated warp** (i.e., `warp == nullptr`). For warped tasks, the warp's own priority is used instead.
+
+```C++
+iris_dispatcher_t<warp_t> dispatcher(worker);
+
+// Task with no warp — priority 0 (highest), dispatched directly to worker
+auto a = dispatcher.allocate(nullptr, []() { /* critical */ }, 0);
+
+// Task with no warp — priority 2 (lower)
+auto b = dispatcher.allocate(nullptr, []() { /* background */ }, 2);
+
+// Warped task — priority parameter is ignored, warp's own priority is used
+auto c = dispatcher.allocate(&warps[0], []() { /* uses warps[0].priority */ });
+```
+
+#### Priority Task Handler
+
+For advanced use cases, you can install a custom priority task handler to intercept tasks with special priority values. Tasks queued with a negative priority (i.e., `priority == ~(size_t)0`) are routed to this handler before being placed into the normal task queue:
+
+```C++
+worker.set_priority_task_handler([](iris_async_worker_t<>::task_base_t* task, size_t& priority) -> bool {
+	// Return true to consume the task (it won't be queued normally)
+	// Return false to let it proceed with the (possibly modified) priority
+	// You can modify 'priority' to reassign the task's priority level
+	return false;
+});
+```
+
+This is useful for implementing custom scheduling policies, such as deferred execution or task filtering.
+
 ### Exiting
 
 Use iris_warp_t::poll to poll all tasks from all warps (including their async_worker's tasks) while exiting.
@@ -702,6 +790,107 @@ local obj = example_t.new()
 local result = obj:call(function(v) return v * 2 end, 21)
 print(result)  -- 42
 ```
+
+### Object Holding: Placement vs View
+
+When exposing C++ objects to Lua, Iristorm provides two fundamentally different strategies for how the object's memory is managed: **placement** and **view**. Understanding the distinction is essential for writing correct and efficient bindings.
+
+#### Placement (Owned Objects)
+
+With placement, the C++ object is **constructed directly inside the Lua userdata memory**. Lua owns the object — it is created when the userdata is allocated and destroyed (via the C++ destructor) when Lua's garbage collector collects the userdata.
+
+Use `place_new_object` in the constructor binding:
+
+```C++
+struct my_object_t {
+	int value = 0;
+
+	static void lua_registar(iris_lua_t lua, std::nullptr_t) {
+		// Placement: object lives inside Lua userdata
+		lua.set_current_new<&iris_lua_t::place_new_object<my_object_t>>("new");
+		lua.set_current<&my_object_t::value>("value");
+	}
+
+	static constexpr const char* lua_typename() noexcept { return "my_object_t"; }
+};
+```
+
+You can also create placement objects from C++:
+
+```C++
+// Create a Lua-owned object from C++, returning a reference
+auto obj_ref = lua.make_registry_object<my_object_t>();
+```
+
+**Key characteristics of placement:**
+- The object is **fully owned by Lua**. Its lifetime is determined by Lua's garbage collector.
+- The C++ destructor (`~my_object_t()`) is called automatically when the userdata is collected.
+- The optional `lua_initialize` callback is invoked when the object is created, and `lua_finalize` is called before the destructor runs during garbage collection.
+- The object's memory is part of the Lua userdata block, so **no separate heap allocation** is needed.
+- This is the best choice when the object's lifecycle is purely driven from Lua scripts.
+
+#### View (Non-Owning References)
+
+With view, the Lua userdata stores only a **pointer** to an existing C++ object. Lua does **not** own the object — it merely provides a reference (a "view") into C++-managed memory. The C++ side is responsible for ensuring the object remains alive as long as Lua might access it.
+
+Create a view from C++:
+
+```C++
+my_object_t cpp_object;
+cpp_object.value = 42;
+
+// Create a view into an existing C++ object
+auto view_ref = lua.make_registry_object_view<my_object_t>(&cpp_object);
+lua.set_global("cpp_obj", std::move(view_ref));
+```
+
+**Key characteristics of view:**
+- The Lua userdata holds a **pointer** to the C++ object, not the object itself.
+- Lua does **not** call the destructor when the userdata is garbage-collected. The C++ side manages the object's lifetime.
+- If the C++ object is destroyed before Lua finishes using the view, accessing the view from Lua leads to **undefined behavior**. You must ensure the C++ object outlives all Lua references to it.
+- The optional `lua_view_initialize` callback is invoked when the view is created, and `lua_view_finalize` is called when the view userdata is garbage-collected. These callbacks are useful for custom reference counting.
+- Views are the right choice when the object is managed externally (e.g., by a C++ engine, a resource manager, or a shared ownership system) and Lua only needs to interact with it temporarily.
+
+#### Internally Distinguishing Placement and View
+
+Iristorm uses a bit flag (`size_mask_view`) in the userdata's raw length to distinguish the two modes at runtime. When extracting an object pointer from Lua:
+
+- If the view bit is **not set**, the userdata is treated as a placement object, and the pointer is computed directly from the userdata memory.
+- If the view bit **is set**, the userdata is treated as a view, and the pointer is read by dereferencing the stored pointer (or via a custom `lua_view_extract` callback).
+
+This distinction is transparent to Lua scripts — both placement objects and views expose the same methods and properties. The difference only matters on the C++ side.
+
+#### Shared Objects
+
+For objects that need shared ownership across multiple Lua states or between C++ and Lua, Iristorm provides the `shared_object_t` base class. Shared objects use **views** internally but add **reference counting** to manage lifetime:
+
+```C++
+struct my_shared_t : iris_lua_t::shared_object_t<my_shared_t> {
+	int data = 0;
+
+	static void lua_registar(iris_lua_t lua, std::nullptr_t) {
+		// Shared: object is heap-allocated and reference-counted
+		lua.set_current_new<&iris_lua_t::shared_new_object<my_shared_t>>("new");
+		lua.set_current<&my_shared_t::data>("data");
+	}
+
+	static constexpr const char* lua_typename() noexcept { return "my_shared_t"; }
+};
+```
+
+With `shared_new_object`, the object is **heap-allocated** and managed via an intrusive reference count. Each Lua view increments the reference count (`lua_shared_acquire`), and when a view is garbage-collected, the count is decremented (`lua_shared_release`). The object is deleted when the count reaches zero.
+
+There is also `shared_local_object_t`, a variant that tracks a single "canonical" Lua reference and avoids incrementing/decrementing the reference count for every additional view within the same Lua state. This is more efficient when many short-lived views are created.
+
+#### Summary
+
+| Feature | Placement | View | Shared |
+|---------|-----------|------|--------|
+| Memory location | Inside Lua userdata | External C++ memory | Heap-allocated |
+| Ownership | Lua GC | C++ side | Reference-counted |
+| Constructor | `place_new_object` | `make_object_view` / `make_registry_object_view` | `shared_new_object` |
+| Destructor called by Lua | Yes (`~T()` + `lua_finalize`) | No (`lua_view_finalize` only) | When ref count → 0 |
+| Use case | Lua-owned objects | Temporary references to C++ objects | Cross-state or shared-lifetime objects |
 
 ## Lua Coroutine Integration
 
