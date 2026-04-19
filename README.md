@@ -539,7 +539,7 @@ Use iris_warp_t::poll to poll all tasks from all warps (including their async_wo
 ```C++
 async_worker.terminate();
 async_worker.join();
-while (iris_warp_t::poll({ &warp1, &warp2, ... })) {
+while (iris_warp_t::poll({ warp1, warp2, ... })) {
 	std::this_thread::sleep_for(std::chrono::milliseconds(20));
 }
 ```
