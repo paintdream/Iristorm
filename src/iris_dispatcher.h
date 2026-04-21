@@ -1142,7 +1142,7 @@ namespace iris {
 		using large_task_allocator_t = allocator_t<large_task_t>;
 		using root_allocator_t = typename task_allocator_t::root_allocator_t;
 
-		iris_async_worker_t() : waiting_thread_count(0), limit_count(0), internal_thread_count(0) {
+		iris_async_worker_t() : waiting_thread_count(0), limit_count(0), internal_thread_count(0), priority_task_threshold(0) {
 			proxy_get_current_thread_index = &iris_async_worker_t::get_current_thread_index_internal;
 			priority_task_handler = [](task_base_t*, size_t&) { return false; };
 			task_allocator_index.store(0, std::memory_order_relaxed);
@@ -1504,8 +1504,9 @@ namespace iris {
 			}
 		}
 
-		void set_priority_task_handler(std::function<bool(task_base_t*, size_t&)>&& handler) noexcept {
+		void set_priority_task_handler(std::function<bool(task_base_t*, size_t&)>&& handler, size_t threshold) noexcept {
 			priority_task_handler = std::move(handler);
+			priority_task_threshold = threshold;
 		}
 
 		struct thread_index_t {
@@ -1613,6 +1614,7 @@ namespace iris {
 		size_t waiting_thread_count; // thread count of waiting on condition variable
 		size_t limit_count; // limit the count of concurrently running thread
 		size_t internal_thread_count; // the count of internal thread
+		size_t priority_task_threshold;
 		std::function<bool(task_base_t*, size_t&)> priority_task_handler;
 	};
 
