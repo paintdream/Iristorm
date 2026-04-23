@@ -47,6 +47,7 @@ SOFTWARE.
 #else
 	#include <sys/mman.h>
 	#include <malloc.h>
+	#include <stdlib.h>
 #endif
 
 #if defined(USE_VLD)
@@ -73,7 +74,8 @@ namespace iris {
 			// mmap also aligns at 64k without any gaps between pages in most of implementations
 			return mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		} else {
-			return aligned_alloc(alignment, size);
+			void* data = nullptr;
+			return posix_memalign(&data, alignment, size) == 0 ? data : nullptr;
 		}
 #endif
 	}
