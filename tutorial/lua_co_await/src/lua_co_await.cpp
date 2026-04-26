@@ -38,7 +38,7 @@ namespace iris {
 			});
 
 			return true;
-		});
+		}, 0);
 	}
 
 	lua_co_await_t::~lua_co_await_t() noexcept {

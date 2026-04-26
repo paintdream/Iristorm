@@ -278,8 +278,8 @@ namespace iris {
 			optional_result_t() : base_t(value_t()) {}
 			optional_result_t(result_error_t&& err) : message(std::move(err.message)) {}
 			optional_result_t(const result_error_t& err) : message(err.message) {}
-			optional_result_t(const std::conditional_t<!std::is_void_v<return_t>, return_t, nullptr_t>& value) : base_t(value) {}
-			optional_result_t(std::conditional_t<!std::is_void_v<return_t>, return_t, nullptr_t>&& value) : base_t(std::move(value)) {}
+			optional_result_t(const std::conditional_t<!std::is_void_v<return_t>, return_t, std::nullptr_t>& value) : base_t(value) {}
+			optional_result_t(std::conditional_t<!std::is_void_v<return_t>, return_t, std::nullptr_t>&& value) : base_t(std::move(value)) {}
 
 			std::string message;
 		};
@@ -860,7 +860,7 @@ namespace iris {
 				subtype_t* object = *p;
 				if (object->view_count++ == 0) {
 					iris_lua_traits_t<type_t>::type::lua_shared_acquire(iris_lua_traits_t<type_t>::type::lua_view_extract(lua, index, p));
-					object->ref = lua.get_context<iris_lua_t::ref_t>(iris_lua_t::context_stackvalue_t(index));
+					object->ref = lua.native_get_variable<iris_lua_t::ref_t>(index);
 				}
 			}
 
@@ -1360,61 +1360,16 @@ namespace iris {
 			return ref_t(luaL_ref(L, LUA_REGISTRYINDEX));
 		}
 
-		// context pesudo keys
-		struct context_this_t {};
-		struct context_table_t {};
-		struct context_upvalue_t {
-			context_upvalue_t(int i) noexcept : index(i) {}
+		struct stackindex_t {
+			stackindex_t(int i) noexcept : index(i) {}
 			int index;
 		};
-
-		struct context_stackvalue_t {
-			context_stackvalue_t(int i) noexcept : index(i) {}
-			int index;
-		};
-
-		struct context_stack_top_t {};
-		struct context_stack_where_t {
-			context_stack_where_t(int lv) noexcept : level(lv) {}
-			int level;
-		};
-
 		struct registry_type_hash_t {
 			registry_type_hash_t(const void* h) noexcept : hash(h) {}
 			operator bool() const noexcept { return true; }
 
 			const void* hash;
 		};
-
-		// get from context
-		template <typename value_t, typename key_t>
-		value_t get_context(key_t&& key) {
-			auto guard = write_fence();
-			lua_State* L = state;
-			stack_guard_t stack_guard(L);
-
-			using type_t = remove_cvref_t<key_t>;
-			if constexpr (std::is_same_v<type_t, context_this_t>) {
-				IRIS_ASSERT(lua_isuserdata(L, 1));
-				return get_variable<value_t>(L, 1);
-			} else if constexpr (std::is_same_v<type_t, context_table_t>) {
-				IRIS_ASSERT(lua_istable(L, -1));
-				return get_variable<value_t>(L, -1);
-			} else if constexpr (std::is_same_v<type_t, context_upvalue_t>) {
-				return get_variable<value_t>(L, lua_upvalueindex(key.index));
-			} else if constexpr (std::is_same_v<type_t, context_stackvalue_t>) {
-				return get_variable<value_t>(L, key.index);
-			} else if constexpr (std::is_same_v<type_t, context_stack_top_t>) {
-				return lua_gettop(L);
-			} else if constexpr (std::is_same_v<type_t, context_stack_where_t>) {
-				luaL_where(L, key.level);
-				value_t ret = get_variable<value_t>(L, -1);
-				lua_pop(L, 1);
-				return std::move(ret);
-			} else {
-				return value_t();
-			}
-		}
 
 		// get from lua registry table
 		template <typename value_t, typename key_t>
@@ -2058,7 +2013,7 @@ namespace iris {
 		}
 
 		template <typename return_t, typename encoder_t, typename stream_t>
-		static ref_t encode_internal_entry(iris_lua_t lua, context_stackvalue_t stack, std::reference_wrapper<const encoder_t> encoder, std::reference_wrapper<stream_t> bytes_wrapper) {
+		static ref_t encode_internal_entry(iris_lua_t lua, stackindex_t stack, std::reference_wrapper<const encoder_t> encoder, std::reference_wrapper<stream_t> bytes_wrapper) {
 			stream_t& bytes = bytes_wrapper;
 			lua_State* L = lua.get_state();
 			lua_newtable(L);
@@ -2787,8 +2742,8 @@ namespace iris {
 				return iris_lua_traits_t<value_t>::type::lua_fromstack(iris_lua_t(L), index);
 			} else if constexpr (std::is_null_pointer_v<value_t>) {
 				return nullptr;
-			} else if constexpr (std::is_same_v<type_t, context_stackvalue_t>) {
-				return context_stackvalue_t(lua_absindex(L, index));
+			} else if constexpr (std::is_same_v<type_t, stackindex_t>) {
+				return stackindex_t(lua_absindex(L, index));
 			} else if constexpr (iris_is_reference_wrapper<type_t>::value) {
 				// pass reference wrapper as plain pointer without lifetime management, usually used by new_object() internally
 				return std::ref(*reinterpret_cast<typename type_t::type*>(lua_touserdata(L, index)));
@@ -3023,7 +2978,7 @@ namespace iris {
 				}
 			} else if constexpr (std::is_null_pointer_v<value_t>) {
 				// do not check
-			} else if constexpr (std::is_same_v<type_t, context_stackvalue_t>) {
+			} else if constexpr (std::is_same_v<type_t, stackindex_t>) {
 				// do not check
 			} else if constexpr (iris_is_reference_wrapper<type_t>::value) {
 				check_result = lua_islightuserdata(L, var_index);

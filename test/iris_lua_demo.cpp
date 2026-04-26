@@ -273,8 +273,7 @@ struct example_t : example_base_t {
 	}
 
 	void join_value_required_refptr(lua_t&& lua, lua_t::required_t<lua_t::refptr_t<example_t>>&& rhs) noexcept {
-		std::string s = lua.get_context<std::string>(lua_t::context_stack_where_t { 1 });
-		printf("Required ptr! %s\n", s.c_str());
+		printf("Required ptr! \n");
 		value += rhs.get().get()->value;
 		lua.deref(std::move(rhs.get()));
 	}
