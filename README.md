@@ -548,6 +548,21 @@ while (iris_warp_t::poll({ warp1, warp2, ... })) {
 
 Iristorm includes a powerful Lua binding system in [iris_lua.h](src/iris_lua.h) that lets you expose C++ types to Lua with minimal boilerplate. It supports methods, properties, constructors, lambdas, overloaded functions, custom type conversions, inheritance, and coroutines. Requires C++17.
 
+> **Note for custom MSVC projects (Windows x64):** Lua's error handling relies on `longjmp` (via `luaL_error`), which on MSVC x64 uses `RtlUnwindEx` to unwind the stack. If `longjmp` passes through a C++ frame compiled with the default `/EHsc` flag, `__CxxFrameHandler4` may call `terminate()` when it encounters a non-C++ (SEH) unwind — even if the frame has no RAII objects. To prevent this, you must do **one** of the following when integrating Lua in your own build system:
+>
+> 1. **Enable `/EHa`** (asynchronous exception handling) for all C++ translation units that contain Lua stub functions, e.g. add `/EHa` to your compiler flags and remove the default `/EHsc`. CMake example:
+>    ```cmake
+>    if (MSVC)
+>        string(REPLACE "/EHsc" "/EHa" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+>        if (NOT CMAKE_CXX_FLAGS MATCHES "/EHa")
+>            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHa")
+>        endif()
+>    endif()
+>    ```
+> 2. **Compile the Lua C sources as C++** (e.g. rename `.c` to `.cpp`, or use `/TP` in MSVC), so that Lua's internal `longjmp`-based error handling is replaced by C++ exception-based error handling (`LUA_USE_LONGJMP` not defined), avoiding the cross-frame unwind issue entirely.
+>
+> This project's `CMakeLists.txt` files already apply option 1 automatically when building with MSVC.
+
 ### Registering a Type
 
 Define a C++ class with a static `lua_registar` method and a `lua_typename` to expose it to Lua:

@@ -14,6 +14,16 @@ IF (ENABLE_ASAN)
 	SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
 ENDIF (ENABLE_ASAN)
 
+IF (MSVC)
+	# Replace /EHsc with /EHa to allow longjmp (used by luaL_error) to safely
+	# unwind through C++ frames on Windows x64 without triggering terminate()
+	# via __CxxFrameHandler4 when processing non-C++ (SEH) unwinds.
+	STRING (REPLACE "/EHsc" "/EHa" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+	IF (NOT CMAKE_CXX_FLAGS MATCHES "/EHa")
+		SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHa")
+	ENDIF ()
+ENDIF (MSVC)
+
 IF (EMSCRIPTEN)
 	SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 	SET (CMAKE_C_FLAGS "${CMAKE_CXX_FLAGS} -pthread")

@@ -168,6 +168,16 @@ ELSE (BUILD_MONOLITHIC)
 ENDIF (BUILD_MONOLITHIC)
 
 IF (MSVC)
+	# Replace /EHsc with /EHa to allow longjmp (used by luaL_error) to safely
+	# unwind through C++ frames on Windows x64 without triggering terminate()
+	# via __CxxFrameHandler4 when processing non-C++ (SEH) unwinds.
+	STRING (REPLACE "/EHsc" "/EHa" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+	IF (NOT CMAKE_CXX_FLAGS MATCHES "/EHa")
+		SET (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHa")
+	ENDIF ()
+ENDIF (MSVC)
+
+IF (MSVC)
 	# Default to statically-linked runtime.
 	IF (BUILD_STANDALONE)
 		SET (MSVC_RUNTIME "static")
