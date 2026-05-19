@@ -72,6 +72,26 @@ namespace iris {
 	}
 
 	// uniform coroutine class with a return type specified
+	//
+	// Lifetime contract for completion / co_await chaining:
+	//   final_suspend() returns std::suspend_never, so the coroutine frame is
+	//   destroyed automatically right after return_value()/return_void()
+	//   finishes.  return_value() invokes `completion` *before* the frame is
+	//   destroyed and *with* its return value bound to a parameter that
+	//   outlives the call.  Consequences:
+	//     * Inside `completion`, you may safely read the return value and
+	//       resume the parent coroutine synchronously (the default chaining
+	//       path in await_suspend() does exactly this -- the parent's
+	//       await_resume() runs while the child's return slot is still
+	//       alive).
+	//     * You MUST NOT capture a reference to anything on the coroutine
+	//       frame (locals, the return value, etc.) and stash it for use after
+	//       `completion` returns.  By the time control unwinds out of
+	//       return_value() the frame is gone.  If you need the value after
+	//       that point, make a copy / move into your own storage.
+	//     * Throwing out of a coroutine body calls std::terminate() (see
+	//       unhandled_exception below); the framework intentionally does not
+	//       propagate exceptions across coroutine boundaries.
 	template <typename return_t = void, template <typename...> class function_t = std::function>
 	struct iris_coroutine_t {
 		using return_type_t = return_t;
@@ -109,6 +129,29 @@ namespace iris {
 			handle.promise().completion = std::forward<func_t>(func);
 
 			return *this;
+		}
+
+		// Safer completion adapter.
+		//
+		// Unlike complete(), this wrapper first moves the coroutine result into
+		// an owned call frame, then invokes the user callback without exposing
+		// the coroutine frame address.  That narrows the lifetime hazard around
+		// final_suspend() == suspend_never: user code no longer receives a
+		// reference directly tied to the coroutine frame.
+		template <typename func_t, typename type_t = return_t>
+		typename std::enable_if<std::is_void_v<type_t>, iris_coroutine_t&>::type then(func_t&& func) noexcept(noexcept(std::declval<iris_coroutine_t&>().complete(std::declval<function_t<void()>>()))) {
+			function_t<void()> callback(std::forward<func_t>(func));
+			return complete([callback = std::move(callback)](void*) mutable noexcept(noexcept(callback())) {
+				callback();
+			});
+		}
+
+		template <typename func_t, typename type_t = return_t>
+		typename std::enable_if<!std::is_void_v<type_t>, iris_coroutine_t&>::type then(func_t&& func) noexcept(noexcept(std::declval<iris_coroutine_t&>().complete(std::declval<function_t<void(return_t)>>()))) {
+			function_t<void(return_t)> callback(std::forward<func_t>(func));
+			return complete([callback = std::move(callback)](void*, return_t&& value) mutable noexcept(noexcept(callback(std::declval<return_t>()))) {
+				callback(return_t(std::move(value)));
+			});
 		}
 
 		// run coroutine intermediately
@@ -209,6 +252,17 @@ namespace iris {
 			return !!(status.load(std::memory_order_acquire) & status_mask_completed);
 		}
 
+		// Public so that callers can pre-dispatch an awaitable and overlap its
+		// work with other code before issuing the final `co_await`.
+		//
+		// Lifetime/threading contract:
+		//   * The `caller` warp is captured *here*, not at `await_suspend()`.
+		//     If you explicitly `dispatch()` an awaitable on one warp and then
+		//     `co_await` it on another, resumption is routed back to the warp
+		//     that ran dispatch().  Avoid splitting dispatch and co_await
+		//     across different warps unless that behavior is intended.
+		//   * Returns true if this call actually performed the dispatch, false
+		//     if it had already been dispatched (e.g. by await_suspend).
 		bool dispatch() noexcept {
 			// already dispatched?
 			if (status.fetch_or(status_mask_dispatched, std::memory_order_release) & status_mask_dispatched) {
@@ -448,7 +502,20 @@ namespace iris {
 		return iris_switch_t<warp_t>(target, other, parallel_target, parallel_other);
 	}
 
-	// switch to any warp from specified range [from, to] 
+	// switch to any warp from specified range [from, to]
+	//
+	// Concurrency note:
+	//   We post a copy of `shared_handle` to every candidate warp.  The first
+	//   callback to win the `exchange()` race captures the handle and writes
+	//   `selected`; every later callback observes a null handle and becomes a
+	//   no-op.  The early `break` is purely an optimization -- correctness
+	//   does not depend on it -- because losing callbacks never touch state.
+	//
+	//   The winning callback is the *only* writer to `selected`, so no
+	//   atomic is needed: the `shared_handle->first.exchange(..., release)`
+	//   that publishes the win synchronizes-with the resumed coroutine's
+	//   later `await_resume()` read via the std::coroutine_handle resume
+	//   barrier.
 	template <typename iterator_t>
 	struct iris_select_t {
 		using warp_t = std::decay_t<decltype(*std::declval<iterator_t>())>;
@@ -605,8 +672,16 @@ namespace iris {
 		std::vector<info_t> handles;
 	};
 
-	// pipe-like multiple coroutine synchronization (mpmc/spsc)
-	template <typename element_t, typename warp_t, typename async_worker_t = typename warp_t::async_worker_t, typename mutex_t = iris_no_mutex_t>
+	// pipe-like multiple coroutine synchronization (mpmc/spsc).
+	//
+	// The default `mutex_t = std::mutex` is correct for MPMC use.  You may
+	// substitute `iris_no_mutex_t` *only* when external synchronization
+	// guarantees that emplace() and the await side never observe a torn
+	// view of the handshake (e.g., a strictly serialized SPSC pair where
+	// emplace and co_await each happen on a dedicated warp).  In the
+	// no-mutex mode the rendezvous re-check is elided, so a generic SPSC
+	// use without the above guarantee may lose wakeups.
+	template <typename element_t, typename warp_t, typename async_worker_t = typename warp_t::async_worker_t, typename mutex_t = std::mutex>
 	struct iris_pipe_t : iris_sync_t<warp_t, async_worker_t> {
 		iris_pipe_t(async_worker_t& worker) : iris_sync_t<warp_t, async_worker_t>(worker) {
 			prepared_count.store(0, std::memory_order_relaxed);
@@ -630,10 +705,10 @@ namespace iris {
 				iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(info));
 				return;
 			}
-			
+
 			std::unique_lock<mutex_t> guard(handle_lock);
 			if constexpr (!std::is_same_v<mutex_t, iris_no_mutex_t>) {
-				// retry
+				// retry under lock to close the lost-wakeup window with emplace()
 				if (flush_prepared()) {
 					guard.unlock();
 					iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(info));
@@ -732,18 +807,21 @@ namespace iris {
 	struct iris_barrier_t : iris_sync_t<warp_t, async_worker_t> {
 		iris_barrier_t(async_worker_t& worker, size_t max_await_count_count, value_t init_value = value_t()) : iris_sync_t<warp_t, async_worker_t>(worker), max_await_count(max_await_count_count), value(init_value) {
 			handles.resize(max_await_count);
-			await_count.store(0, std::memory_order_relaxed);
+			slot_count.store(0, std::memory_order_relaxed);
+			commit_count.store(0, std::memory_order_relaxed);
 			release_await_count.store(0, std::memory_order_release);
 		}
 
 		void reset(size_t max_await_count_count, value_t init_value = value_t()) {
-			IRIS_ASSERT(await_count.load(std::memory_order_acquire) == 0);
+			IRIS_ASSERT(slot_count.load(std::memory_order_acquire) == 0);
+			IRIS_ASSERT(commit_count.load(std::memory_order_acquire) == 0);
 			IRIS_ASSERT(release_await_count.load(std::memory_order_acquire) == 0);
 
 			max_await_count = max_await_count_count;
 			value = init_value;
 			handles.resize(max_await_count);
-			await_count.store(0, std::memory_order_relaxed);
+			slot_count.store(0, std::memory_order_relaxed);
+			commit_count.store(0, std::memory_order_relaxed);
 			release_await_count.store(0, std::memory_order_release);
 		}
 
@@ -766,17 +844,25 @@ namespace iris {
 			await_suspend(std::coroutine_handle<>());
 		}
 
+		// release() does not provide a handle; it only consumes one "expected"
+		// participant slot.  We bump commit_count directly (no handles[] write
+		// to publish), and trigger complete() if we are the last one.
 		void release(size_t count = 1) noexcept {
 			release_await_count.fetch_add(count, std::memory_order_relaxed);
 			IRIS_ASSERT(max_await_count >= release_await_count.load(std::memory_order_relaxed));
-			size_t index = await_count.fetch_add(count, std::memory_order_acquire);
-			if (index + count == max_await_count) {
+			// commit_count uses acq_rel so that the thread eventually firing
+			// complete() acquires all preceding handles[] writes from peers.
+			size_t prev = commit_count.fetch_add(count, std::memory_order_acq_rel);
+			if (prev + count == max_await_count) {
 				complete();
 			}
 		}
 
 		void await_suspend(std::coroutine_handle<> handle) {
-			size_t index = await_count.fetch_add(1, std::memory_order_acquire);
+			// Step 1: allocate an index slot.  slot_count is *only* used to
+			// assign indices, never to decide when to fire complete().  This
+			// way the index-allocating fetch_add can be relaxed.
+			size_t index = slot_count.fetch_add(1, std::memory_order_relaxed);
 			IRIS_ASSERT(index < max_await_count);
 
 			if (handle) {
@@ -788,8 +874,13 @@ namespace iris {
 				}
 			}
 
-			// all finished?
-			if (index + 1 == max_await_count) {
+			// Step 2: publish the write to handles[index] before triggering
+			// complete().  The acq_rel fetch_add releases our handles[]
+			// store and acquires every other waiter's store, so the thread
+			// that observes commit_count == max_await_count is guaranteed
+			// to see *all* handles[] entries populated.
+			size_t prev = commit_count.fetch_add(1, std::memory_order_acq_rel);
+			if (prev + 1 == max_await_count) {
 				complete();
 			}
 		}
@@ -812,13 +903,14 @@ namespace iris {
 		}
 
 		size_t get_await_count() const noexcept {
-			return await_count.load(std::memory_order_acquire);
+			return commit_count.load(std::memory_order_acquire);
 		}
 
 	protected:
 		void complete() {
-			size_t old = await_count.exchange(0, std::memory_order_release);
+			size_t old = commit_count.exchange(0, std::memory_order_release);
 			IRIS_ASSERT(old == max_await_count);
+			slot_count.store(0, std::memory_order_relaxed);
 
 			// update max_await_count
 			IRIS_ASSERT(max_await_count >= release_await_count.load(std::memory_order_relaxed));
@@ -847,7 +939,11 @@ namespace iris {
 		using info_t = typename iris_sync_t<warp_t, async_worker_t>::info_t;
 		size_t max_await_count;
 		value_t value;
-		std::atomic<size_t> await_count;
+		// slot_count: monotonically allocates indices into handles[]; reset on complete().
+		// commit_count: counts publications of handles[] (incl. release()-only); acq_rel
+		//   ordered so that the thread firing complete() observes every peer's write.
+		std::atomic<size_t> slot_count;
+		std::atomic<size_t> commit_count;
 		std::vector<info_t> handles;
 		std::function<void(iris_barrier_t&)> callback;
 		std::atomic<size_t> release_await_count;
@@ -1076,16 +1172,22 @@ namespace iris {
 		void release(const amount_t& amount) {
 			quota.release(std::move(amount));
 
-			while (!handles.empty()) {
-				std::unique_lock<std::mutex> guard(out_lock);
+			// Walk pending waiters and wake the next one whose request can
+			// be satisfied.  Must hold the same lock used by acquire_queued()
+			// so we cannot miss a waiter that is in the middle of pushing.
+			while (true) {
+				std::unique_lock<std::mutex> guard(lock);
+				if (handles.empty()) {
+					break;
+				}
 
 				auto& top = handles.top();
 				if (quota.acquire(top.second)) {
-					info_t handle = std::move(top.first);
+					info_t h = std::move(top.first);
 					handles.pop();
 					guard.unlock();
 
-					iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(handle));
+					iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(h));
 				} else {
 					break;
 				}
@@ -1097,15 +1199,28 @@ namespace iris {
 		}
 
 	protected:
+		// Push a waiter into the queue using double-checked locking against
+		// release().  Without the re-try inside the lock, the following
+		// interleaving would leak a wakeup:
+		//   T1 (consumer): quota.acquire() fails in awaitable_t ctor
+		//   T2 (releaser): release() grabs lock, sees handles empty, exits
+		//   T1 (consumer): pushes handle -- never woken
 		void acquire_queued(info_t&& info, const amount_t& amount) {
-			std::lock_guard<std::mutex> guard(in_lock);
+			std::unique_lock<std::mutex> guard(lock);
+			// retry: another thread may have released enough quota between
+			// the initial guard() probe and our reaching this point.
+			if (quota.acquire(amount)) {
+				guard.unlock();
+				iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(info));
+				return;
+			}
+
 			handles.push(std::make_pair(std::move(info), amount));
 		}
 
 	protected:
 		quota_t& quota;
-		std::mutex in_lock;
-		std::mutex out_lock;
+		std::mutex lock;
 		iris_queue_list_t<std::pair<info_t, amount_t>> handles;
 	};
 }

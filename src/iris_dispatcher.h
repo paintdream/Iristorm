@@ -306,6 +306,19 @@ namespace iris {
 			IRIS_ASSERT(get_current_internal() != this);
 
 			// must poll manually before destruction!
+			//
+			// IMPORTANT lifetime rule: when multiple warps share the same
+			// async_worker, tasks queued on one warp may post follow-up tasks
+			// to a sibling warp.  Therefore *all* warps in such a group must
+			// be fully drained (via iris_warp_t::poll(begin, end) over the
+			// entire group) BEFORE the first of them is destroyed.  Destroying
+			// one warp while siblings are still active is undefined behavior:
+			// in debug the assertions below trip; in release nothing prevents
+			// a still-running task from posting into this warp after its
+			// queues are freed.  Recommended idiom:
+			//
+			//     while (iris_warp_t::poll(warps.begin(), warps.end())) {}
+			//     warps.clear();   // safe
 			IRIS_ASSERT(storage.empty());
 			IRIS_ASSERT(!has_parallel_task());
 		}
@@ -943,11 +956,6 @@ namespace iris {
 			// IRIS_ASSERT(routine_handle.routine->lock_count.load(std::memory_order_relaxed) != 0);
 			routine_handle.routine->lock_count.fetch_add(1, std::memory_order_relaxed);
 			return routine_handle_t(routine_handle.routine);
-		}
-
-		void next(routine_handle_t&& routine_handle) noexcept {
-			routine_t* routine = routine_handle.move();
-			IRIS_ASSERT(routine_handle.routine->lock_count.load(std::memory_order_relaxed) == ~size_t(0));
 		}
 
 		// dispatch a task

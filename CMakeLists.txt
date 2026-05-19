@@ -147,6 +147,21 @@ IF (ENABLE_COROUTINE)
 	IF (NOT MSVC)
 		TARGET_LINK_LIBRARIES (iris_engine_demo m ${STDLIB} pthread)
 	ENDIF (NOT MSVC)
+
+	FILE (GLOB_RECURSE IRIS_COROUTINE_STRESS_SRC
+		"${PROJECT_SOURCE_DIR}/src/iris_common.h"
+		"${PROJECT_SOURCE_DIR}/src/iris_common.inl"
+		"${PROJECT_SOURCE_DIR}/src/iris_dispatcher.h"
+		"${PROJECT_SOURCE_DIR}/src/iris_coroutine.h"
+		"${PROJECT_SOURCE_DIR}/test/iris_coroutine_stress.cpp"
+	)
+
+	ADD_EXECUTABLE (iris_coroutine_stress ${IRIS_COROUTINE_STRESS_SRC})
+	ADD_TEST (test_coroutine_stress iris_coroutine_stress)
+
+	IF (NOT MSVC)
+		TARGET_LINK_LIBRARIES (iris_coroutine_stress m ${STDLIB} pthread)
+	ENDIF (NOT MSVC)
 ENDIF (ENABLE_COROUTINE)
 
 IF (ENABLE_LUA)
