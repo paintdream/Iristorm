@@ -192,14 +192,19 @@ namespace iris {
 			lua_pop(L, 1);
 		}
 
+		static void raw_getregistry(lua_State* L, const char* name) {
+			lua_pushstring(L, name);
+			lua_rawget(L, LUA_REGISTRYINDEX);
+		}
+
 		// systrap is a low level error-capturing machanism
 		// usually you can get errors from result_error_t when calling lua
 		// but in LuaJIT and Lua 5.1, it is impossible to retrieve errors from C-lua mixed coroutines
-		// so you could declare a __iris_systrap__ lua variable to make a workaround.
+		// so you could store a __iris_systrap__ function in REGISTRY to make a workaround.
 		template <typename... args_t>
 		static void systrap(lua_State* L, const char* category, const char* format, args_t&&... args) {
 			stack_guard_t stack_guard(L);
-			raw_getglobal(L, "__iris_systrap__");
+			raw_getregistry(L, "__iris_systrap__");
 
 			if (lua_type(L, -1) == LUA_TFUNCTION) {
 				lua_pushstring(L, category);
@@ -3306,7 +3311,7 @@ namespace iris {
 #else
 					// however if you use a lower version (including LuaJIT),
 					// since C-continuation from yielding point is not possible, we cannot resume the coroutine anymore as C-error happends,
-					// try using __iris_systrap__ to capture it
+					// try using __iris_systrap__ from REGISTRY to capture it
 					return IRIS_LUA_YIELD(L, 0);
 #endif
 				}
