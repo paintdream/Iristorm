@@ -755,7 +755,7 @@ namespace iris {
 
 		template <typename type_t, typename... args_t>
 		static auto make_shared(args_t&&... args) {
-			return shared_ref_t<type_t>::template make(std::forward<args_t>(args)...);
+			return shared_ref_t<type_t>::make(std::forward<args_t>(args)...);
 		}
 
 		// trivial trait behavior: pushing & getting variable by value
