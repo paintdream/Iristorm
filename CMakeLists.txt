@@ -72,6 +72,18 @@ ELSE (ENABLE_COROUTINE)
 	ENDIF (ENABLE_LUA)
 ENDIF (ENABLE_COROUTINE)
 
+IF (EMSCRIPTEN)
+	FIND_PROGRAM (IRIS_NODE_EXECUTABLE node REQUIRED)
+ENDIF (EMSCRIPTEN)
+
+FUNCTION (IRIS_ADD_TEST TEST_NAME TARGET_NAME)
+	IF (EMSCRIPTEN)
+		ADD_TEST (NAME ${TEST_NAME} COMMAND ${IRIS_NODE_EXECUTABLE} $<TARGET_FILE:${TARGET_NAME}>)
+	ELSE (EMSCRIPTEN)
+		ADD_TEST (NAME ${TEST_NAME} COMMAND $<TARGET_FILE:${TARGET_NAME}>)
+	ENDIF (EMSCRIPTEN)
+ENDFUNCTION ()
+
 INCLUDE_DIRECTORIES ("${PROJECT_BINARY_DIR}")
 STRING (REPLACE "/" "\\" BUILTIN_SOURCE_DIR "${PROJECT_SOURCE_DIR}")
 
@@ -83,7 +95,7 @@ FILE (GLOB_RECURSE IRIS_DISPATCHER_DEMO_SRC
 )
 
 ADD_EXECUTABLE (iris_dispatcher_demo ${IRIS_DISPATCHER_DEMO_SRC})
-ADD_TEST (test_dispatcher iris_dispatcher_demo)
+IRIS_ADD_TEST (test_dispatcher iris_dispatcher_demo)
 
 IF (NOT MSVC)
 	TARGET_LINK_LIBRARIES (iris_dispatcher_demo m ${STDLIB} pthread)
@@ -97,7 +109,7 @@ FILE (GLOB_RECURSE IRIS_SYSTEM_DEMO_SRC
 )
 
 ADD_EXECUTABLE (iris_system_demo ${IRIS_SYSTEM_DEMO_SRC})
-ADD_TEST (test_system iris_system_demo)
+IRIS_ADD_TEST (test_system iris_system_demo)
 
 IF (NOT MSVC)
 	TARGET_LINK_LIBRARIES (iris_system_demo m ${STDLIB} pthread)
@@ -111,7 +123,7 @@ FILE (GLOB_RECURSE IRIS_TREE_DEMO_SRC
 )
 
 ADD_EXECUTABLE (iris_tree_demo ${IRIS_TREE_DEMO_SRC})
-ADD_TEST (test_tree iris_tree_demo)
+IRIS_ADD_TEST (test_tree iris_tree_demo)
 
 IF (NOT MSVC)
 	TARGET_LINK_LIBRARIES (iris_tree_demo m ${STDLIB} pthread)
@@ -127,7 +139,7 @@ IF (ENABLE_COROUTINE)
 	)
 	
 	ADD_EXECUTABLE (iris_coroutine_demo ${IRIS_COROUTINE_DEMO_SRC})
-	ADD_TEST (test_coroutine iris_coroutine_demo)
+	IRIS_ADD_TEST (test_coroutine iris_coroutine_demo)
 
 	IF (NOT MSVC)
 		TARGET_LINK_LIBRARIES (iris_coroutine_demo m ${STDLIB} pthread)
@@ -142,7 +154,7 @@ IF (ENABLE_COROUTINE)
 	)
 	
 	ADD_EXECUTABLE (iris_engine_demo ${IRIS_ENGINE_DEMO_SRC})
-	ADD_TEST (test_engine iris_engine_demo)
+	IRIS_ADD_TEST (test_engine iris_engine_demo)
 
 	IF (NOT MSVC)
 		TARGET_LINK_LIBRARIES (iris_engine_demo m ${STDLIB} pthread)
@@ -157,7 +169,11 @@ IF (ENABLE_COROUTINE)
 	)
 
 	ADD_EXECUTABLE (iris_coroutine_stress ${IRIS_COROUTINE_STRESS_SRC})
-	ADD_TEST (test_coroutine_stress iris_coroutine_stress)
+	IRIS_ADD_TEST (test_coroutine_stress iris_coroutine_stress)
+
+	IF (EMSCRIPTEN)
+		TARGET_LINK_OPTIONS (iris_coroutine_stress PRIVATE "SHELL:-s INITIAL_MEMORY=67108864")
+	ENDIF (EMSCRIPTEN)
 
 	IF (NOT MSVC)
 		TARGET_LINK_LIBRARIES (iris_coroutine_stress m ${STDLIB} pthread)
@@ -220,7 +236,7 @@ IF (ENABLE_LUA)
 	ENDIF (NOT ENABLE_LUA_BUILTIN)
 
 	TARGET_COMPILE_DEFINITIONS (iris_lua_demo PRIVATE LUAI_ASSERT)
-	ADD_TEST (test_lua iris_lua_demo)
+	IRIS_ADD_TEST (test_lua iris_lua_demo)
 
 	IF (MSVC)
 		TARGET_LINK_LIBRARIES (iris_lua_demo ${LUALIB})
@@ -228,5 +244,4 @@ IF (ENABLE_LUA)
 		TARGET_LINK_LIBRARIES (iris_lua_demo m ${STDLIB} ${LUALIB})
 	ENDIF (MSVC)
 ENDIF (ENABLE_LUA)
-
 
