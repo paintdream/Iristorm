@@ -349,12 +349,20 @@ static void test_event_cycle() {
 int main() {
 	int failures = 0;
 
-	if (!run_with_timeout("barrier race",          std::chrono::seconds(15), test_barrier_race))          failures++;
-	if (!run_with_timeout("quota lost wakeup",     std::chrono::seconds(15), test_quota_lost_wakeup))     failures++;
-	if (!run_with_timeout("pipe SPSC race",        std::chrono::seconds(15), test_pipe_spsc_race))        failures++;
-	if (!run_with_timeout("dispatcher::next",      std::chrono::seconds(5),  test_dispatcher_next_handle)) failures++;
-	if (!run_with_timeout("warp suspend storm",    std::chrono::seconds(15), test_warp_suspend_resume_storm)) failures++;
-	if (!run_with_timeout("event reset/notify",    std::chrono::seconds(15), test_event_cycle))           failures++;
+#if defined(__EMSCRIPTEN__)
+	const auto stress_timeout = std::chrono::seconds(60);
+	const auto short_timeout = std::chrono::seconds(20);
+#else
+	const auto stress_timeout = std::chrono::seconds(15);
+	const auto short_timeout = std::chrono::seconds(5);
+#endif
+
+	if (!run_with_timeout("barrier race",          stress_timeout, test_barrier_race))          failures++;
+	if (!run_with_timeout("quota lost wakeup",     stress_timeout, test_quota_lost_wakeup))     failures++;
+	if (!run_with_timeout("pipe SPSC race",        stress_timeout, test_pipe_spsc_race))        failures++;
+	if (!run_with_timeout("dispatcher::next",      short_timeout,  test_dispatcher_next_handle)) failures++;
+	if (!run_with_timeout("warp suspend storm",    stress_timeout, test_warp_suspend_resume_storm)) failures++;
+	if (!run_with_timeout("event reset/notify",    stress_timeout, test_event_cycle))           failures++;
 
 	printf("\n==== %d failure(s) ====\n", failures);
 	// We intentionally do NOT call std::exit so detached watchdog threads
