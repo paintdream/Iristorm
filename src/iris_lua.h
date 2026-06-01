@@ -57,14 +57,6 @@ extern "C" {
 #define LUA_NUMTYPES (LUA_TTHREAD + 1)
 #endif
 
-#if LUA_VERSION_NUM <= 502
-#define LUA_ENABLE_YIELDK 0
-#define LUA_CLEAR_STACK_ON_YIELD 1
-#else
-#define LUA_ENABLE_YIELDK 1
-#define LUA_CLEAR_STACK_ON_YIELD 0
-#endif
-
 #if LUA_VERSION_NUM <= 503
 #define lua_newuserdatauv(L, size, uv) lua_newuserdata(L, size)
 #endif
@@ -3175,14 +3167,8 @@ namespace iris {
 							push_variable(L, std::move(value));
 						}
 
-#if LUA_CLEAR_STACK_ON_YIELD
-						int count = lua_gettop(L); // old lua will clear input parameters as coroutine yield
-#else
-						int count = lua_gettop(L) - top;
-#endif
-						IRIS_ASSERT(count >= 0);
 						push_variable(L, context);
-						coroutine_continuation(L, count, address);
+						coroutine_continuation(L, address);
 					}).run();
 				} else {
 					coroutine.complete([=](void* address) {
@@ -3197,7 +3183,7 @@ namespace iris {
 						
 						lua_pushnil(L);
 						push_variable(L, address);
-						coroutine_continuation(L, 1, address);
+						coroutine_continuation(L, address);
 					}).run();
 				}
 
@@ -3224,8 +3210,9 @@ namespace iris {
 			lua_rawset(L, LUA_REGISTRYINDEX);
 		}
 
-		static void coroutine_continuation(lua_State* L, int count, void* address) {
+		static void coroutine_continuation(lua_State* L, void* address) {
 			if (lua_status(L) == LUA_YIELD) {
+				int count = 1;
 				bool ret_error = lua_touserdata(L, -1) == reinterpret_cast<char*>(L) + 1;
 				if (!ret_error) {
 					lua_pop(L, 1);

@@ -48,7 +48,7 @@ static bool run_with_timeout(const char* name, std::chrono::milliseconds ms, fn_
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: iris_barrier_t — race between concurrent await_suspend writers and
+// Test 1: iris_barrier_t - race between concurrent await_suspend writers and
 // the thread that runs complete().  When `await_count.fetch_add(1)` returns
 // the index, the writing thread has NOT yet stored `handles[index].handle`.
 // If another thread is "last" and runs complete() before our store is
@@ -115,11 +115,11 @@ static void test_barrier_race() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: iris_quota_queue_t — lost wakeup race.
+// Test 2: iris_quota_queue_t - lost wakeup race.
 //
 // guard(amount) decides `ready` at construction time. If quota.acquire fails,
 // await_suspend pushes into `handles`.  Meanwhile another thread can call
-// release(); release() iterates `handles` — but if our push hasn't landed yet,
+// release(); release() iterates `handles` - but if our push hasn't landed yet,
 // it sees nothing.  We then push, and the wakeup never comes.
 //
 // We reproduce by hammering a small quota with many consumers, each releasing
@@ -165,7 +165,7 @@ static void test_quota_lost_wakeup() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: iris_pipe_t — SPSC race with default iris_no_mutex_t.
+// Test 3: iris_pipe_t - SPSC race with default iris_no_mutex_t.
 //
 // We have one producer and one consumer, but both run on the async worker
 // pool, so the underlying push/await interleaves freely.  Default no-mutex
@@ -185,7 +185,7 @@ static void test_pipe_spsc_race() {
 	auto producer = [&]() -> coroutine_t {
 		for (int i = 0; i < N; i++) {
 			pipe.emplace(i);
-			// no awaiting — just keep posting
+			// no awaiting - just keep posting
 			co_await iris_awaitable(static_cast<warp_t*>(nullptr),
 				[]() {}); // yield back to pool
 		}
@@ -219,7 +219,7 @@ static void test_pipe_spsc_race() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: iris_dispatcher_t::next() — REMOVED upstream.  Kept here as a
+// Test 4: iris_dispatcher_t::next() - REMOVED upstream.  Kept here as a
 // compile-time guard: if someone re-introduces a misnamed `next()` overload,
 // this test will fail to compile and remind them to handle the routine
 // lifecycle correctly.
@@ -229,7 +229,7 @@ static void test_dispatcher_next_handle() {
 	{
 		iris_dispatcher_t<warp_t> d(worker);
 		auto h = d.allocate(nullptr, [](const auto&) {});
-		// `next()` is gone — drive the routine to completion via dispatch()
+		// `next()` is gone - drive the routine to completion via dispatch()
 		// to prove the dispatcher still pumps pending_count back to 0.
 		d.dispatch(std::move(h));
 
@@ -249,7 +249,7 @@ static void test_dispatcher_next_handle() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: iris_warp_t — concurrent suspend / resume / queue_routine_post.
+// Test 5: iris_warp_t - concurrent suspend / resume / queue_routine_post.
 // Stress the warp scheduler to expose any starvation under heavy contention.
 static void test_warp_suspend_resume_storm() {
 	worker_t worker(std::thread::hardware_concurrency());
@@ -303,7 +303,7 @@ static void test_warp_suspend_resume_storm() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: iris_event_t — repeated notify/reset cycles with many waiters.
+// Test 6: iris_event_t - repeated notify/reset cycles with many waiters.
 static void test_event_cycle() {
 	using event_t = iris_event_t<void, worker_t>;
 
