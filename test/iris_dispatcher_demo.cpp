@@ -5,37 +5,54 @@
 #include <chrono>
 using namespace iris;
 
+template <bool strand>
 static void external_poll();
+template <bool strand>
 static void stack_op();
+template <bool strand>
 static void not_pow_two();
+template <bool strand>
 static void framed_data();
+template <bool strand>
 static void simple_explosion();
+template <bool strand>
 static void garbage_collection();
+template <bool strand>
 static void acquire_release();
+template <bool strand>
 static void graph_dispatch();
+template <bool strand>
+static void accumulate();
+
+template <bool strand>
+static void run_tests() {
+	external_poll<strand>();
+	stack_op<strand>();
+	not_pow_two<strand>();
+	framed_data<strand>();
+	simple_explosion<strand>();
+	garbage_collection<strand>();
+	acquire_release<strand>();
+	graph_dispatch<strand>();
+	accumulate<strand>();
+}
 
 int main(void) {
-	external_poll();
-	stack_op();
-	not_pow_two();
-	framed_data();
-	simple_explosion();
-	garbage_collection();
-	acquire_release();
-	graph_dispatch();
-
+	run_tests<false>();
+	run_tests<true>();
 	return 0;
 }
 
 template <typename element_t>
 using worker_allocator_t = iris_object_allocator_t<element_t>;
 
+template <bool strand>
 void external_poll() {
 	static constexpr size_t thread_count = 4;
 	static constexpr size_t warp_count = 8;
 
 	using worker_t = iris_async_worker_t<std::thread, std::function<void()>, worker_allocator_t>;
-	using warp_t = iris_warp_t<worker_t>;
+	using warp_t = iris_warp_t<worker_t, strand>;
 
 	worker_t worker(thread_count);
 	std::promise<bool> started;
@@ -79,11 +96,12 @@ void external_poll() {
 	worker.join();
 }
 
+template <bool strand>
 void stack_op() {
 	static constexpr size_t thread_count = 4;
 	static constexpr size_t warp_count = 8;
 	iris_async_worker_t<> worker(thread_count);
-	using warp_t = iris_warp_t<iris_async_worker_t<>>;
+	using warp_t = iris_warp_t<iris_async_worker_t<>, strand>;
 	std::vector<warp_t> warps;
 	warps.reserve(warp_count);
 	for (size_t i = 0; i < warp_count; i++) {
@@ -99,7 +117,7 @@ void stack_op() {
 		warps[i].queue_routine_post([&, i]() {
 			for (size_t k = 0; k < warp_count; k++) {
 				IRIS_ASSERT(i == warp_t::get_current() - &warps[0]);
-				warp_t::preempt_guard_t guard(warps[k], 0);
+				typename warp_t::preempt_guard_t guard(warps[k], 0);
 				printf("take warp %d based on %d %s\n", int(k), int(i), guard ? "success!" : "failed!");
 			}
 
@@ -112,6 +130,7 @@ void stack_op() {
 	worker.join();
 }
 
+template <bool strand>
 void not_pow_two() {
 	struct pos_t {
 		pos_t(float xx, float yy, float zz) : x(xx), y(yy), z(zz) {}
@@ -126,6 +145,7 @@ void not_pow_two() {
 	d.x = 2;
 }
 
+template <bool strand>
 void framed_data() {
 	printf("[[ demo for iris dispatcher : framed_data ]]\n");
 
@@ -165,12 +185,13 @@ void framed_data() {
 	}
 }
 
+template <bool strand>
 void simple_explosion(void) {
 	static constexpr size_t thread_count = 4;
 	static constexpr size_t warp_count = 8;
 
 	using worker_t = iris_async_worker_t<std::thread, std::function<void()>, worker_allocator_t>;
-	using warp_t = iris_warp_t<worker_t>;
+	using warp_t = iris_warp_t<worker_t, strand>;
 
 	worker_t worker(thread_count);
 	iris_async_balancer_t<worker_t> balancer(worker);
@@ -291,9 +312,10 @@ void simple_explosion(void) {
 	}
 }
 
-struct count_warp_t : iris_warp_t<iris_async_worker_t<>, false, count_warp_t> {
+template <bool strand>
+struct count_warp_t : iris_warp_t<iris_async_worker_t<>, strand, count_warp_t<strand>> {
 	template <typename... args_t>
-	count_warp_t(args_t&&... args) : iris_warp_t<iris_async_worker_t<>, false, count_warp_t>(std::forward<args_t>(args)...) {}
+	count_warp_t(args_t&&... args) : iris_warp_t<iris_async_worker_t<>, strand, count_warp_t>(std::forward<args_t>(args)...) {}
 	~count_warp_t() {
 		assert(counter == 0);
 	}
@@ -320,10 +342,11 @@ struct count_warp_t : iris_warp_t<iris_async_worker_t<>, false, count_warp_t> {
 	void flush_warp() {}
 };
 
+template <bool strand>
 void garbage_collection() {
 	static constexpr size_t thread_count = 8;
 	static constexpr size_t warp_count = 16;
-	using warp_t = count_warp_t;
+	using warp_t = count_warp_t<strand>;
 
 	for (size_t m = 0; m < 4; m++) {
 		iris_async_worker_t<> worker(thread_count);
@@ -378,7 +401,7 @@ void garbage_collection() {
 		collecting_count.store(0, std::memory_order_release);
 
 		collector = [&warps, &collector, &worker, &graph, &collecting_count](size_t node_index) {
-			count_warp_t& current_warp = *static_cast<count_warp_t*>(warp_t::get_current());
+			warp_t& current_warp = *static_cast<warp_t*>(warp_t::get_current());
 			size_t warp_index = &current_warp - &warps[0];
 
 			node_t& node = graph.nodes[node_index];
@@ -429,11 +452,12 @@ void garbage_collection() {
 	}
 }
 
+template <bool strand>
 void graph_dispatch() {
 	static constexpr size_t thread_count = 8;
 	static constexpr size_t warp_count = 16;
 	iris_async_worker_t<> worker(thread_count);
-	using warp_t = iris_warp_t<iris_async_worker_t<>>;
+	using warp_t = iris_warp_t<iris_async_worker_t<>, strand>;
 	worker.start();
 
 	std::vector<warp_t> warps;
@@ -451,16 +475,17 @@ void graph_dispatch() {
 	struct dispatcher_t : iris_dispatcher_t<warp_t, dispatcher_t> {
 		dispatcher_t(iris_async_worker_t<>& w) : iris_dispatcher_t<warp_t, dispatcher_t>(w) {}
 		void dispatcher_complete() {
-			async_worker.terminate();
+			this->async_worker.terminate();
 		}
 
+		using routine_handle_t = iris_dispatcher_t<warp_t, dispatcher_t>::routine_handle_t;
 		void dispatcher_enter_execute(const routine_handle_t&) {}
 		void dispatcher_leave_execute(const routine_handle_t&) {}
 	};
 
+	using routine_handle_t = dispatcher_t::routine_handle_t;
 	dispatcher_t dispatcher(worker);
 
-	using routine_handle_t = dispatcher_t::routine_handle_t;
 	routine_handle_t last = dispatcher.allocate(nullptr);
 	for (size_t k = 0; k < total_pass; k++) {
 		routine_handle_t d = dispatcher.allocate(&warps[2], [&task_count](const auto& handle) {
@@ -546,9 +571,10 @@ void graph_dispatch() {
 	}
 }
 
+template <bool strand>
 void acquire_release() {
 	static constexpr size_t thread_count = 8;
-	using warp_t = iris_warp_t<iris_async_worker_t<>>;
+	using warp_t = iris_warp_t<iris_async_worker_t<>, strand>;
 
 	iris_async_worker_t<> worker(thread_count);
 	worker.start();
@@ -584,3 +610,54 @@ void acquire_release() {
 	}
 }
 
+template <bool strand>
+static void accumulate() {
+	static constexpr size_t thread_count = 8;
+	using warp_t = iris_warp_t<iris_async_worker_t<>, strand>;
+
+	iris_async_worker_t<> worker(thread_count);
+	worker.start();
+
+	warp_t main_warp(worker, 0);
+	size_t test = 0;
+	for (size_t k = 0; k < 5; k++) {
+		printf("---------------------------------\n");
+		size_t result = 0;
+		std::atomic<int> active_count = 0;
+		constexpr size_t parallel_factor = 512;
+		active_count.fetch_add(1, std::memory_order_relaxed);
+		for (size_t i = 0; i < parallel_factor; i++) {
+			active_count.fetch_add(1, std::memory_order_relaxed);
+			main_warp.queue_routine_parallel_post([i, &main_warp, &result, &active_count]() {
+				size_t sum = 0;
+				for (size_t n = 0; n < (parallel_factor - i); n++) {
+					sum = sum + n * n;
+				}
+
+				if (active_count.fetch_sub(1, std::memory_order_acquire) == 1) {
+					printf("accumulate compute completed\n");
+				}
+
+				main_warp.queue_routine([sum, i, &result]() {
+					if (i % 100 == 0 || i == parallel_factor - 1) {
+						printf("accumulate summary checkpoint %d. (may appears before compute completed)\n", (int)i);
+					}
+
+					result += sum;
+				});
+			});
+		}
+
+		if (active_count.fetch_sub(1, std::memory_order_acquire) == 1) {
+			printf("accumulate compute completed\n");
+		}
+
+		while (main_warp.poll()) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+
+		printf("accumulate pass %d: %d\n", (int)k, (int)result);
+		IRIS_ASSERT(test == 0 || test == result);
+		test = result;
+	}
+}

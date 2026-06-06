@@ -287,7 +287,7 @@ if (rand() % parallel_factor == 0) {
 
 The function **queue_routine_parallel** invokes a special parallelized task on current_warp, which can be run at the same time. While a parallelized task is running, other normal tasks on current_warp remain **blocked**. After all parallelized tasks finish, the normal tasks can then be scheduled.
 
-**Parallelized tasks to normal tasks is what read locks to write locks**. It's an advanced feature and you must be careful when using them.
+**Parallelized tasks to normal tasks is what read locks to write locks** if you **NEVER** call warp_t::poll() manually. It's an advanced feature and you must be careful when using them.
 
 ### Coroutines
 
