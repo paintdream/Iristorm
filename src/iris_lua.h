@@ -1706,7 +1706,7 @@ namespace iris {
 		}
 
 		template <typename callable_t>
-		optional_result_t<int> native_call(callable_t&& reference, int param_count) {
+		optional_result_t<int> native_call(callable_t&& reference, int param_count, int error_handler = 0) {
 			IRIS_PROFILE_SCOPE(__FUNCTION__);
 			auto guard = write_fence();
 
@@ -1717,7 +1717,7 @@ namespace iris {
 			IRIS_ASSERT(lua_gettop(L) == top + 1);
 			lua_insert(L, -param_count - 1);
 
-			if (lua_pcall(L, param_count, LUA_MULTRET, 0) == LUA_OK) {
+			if (lua_pcall(L, param_count, LUA_MULTRET, error_handler) == LUA_OK) {
 				return lua_gettop(L) - top + param_count;
 			} else {
 				iris_lua_t::systrap(L, "error.call", "iris_lua_t::call() -> call function failed! %s\n", luaL_optstring(L, -1, ""));
@@ -1728,26 +1728,60 @@ namespace iris {
 			}
 		}
 
+		static int traceback(lua_State* L) {
+			const char* msg = lua_tostring(L, 1);
+			if (msg == NULL) {  /* is error object not a string? */
+				if (luaL_callmeta(L, 1, "__tostring") &&  /* does it have a metamethod */
+					lua_type(L, -1) == LUA_TSTRING)  /* that produces a string? */
+					return 1;  /* that is the message */
+				else {
+					msg = lua_pushfstring(L, "(error object is a %s value)",
+						luaL_typename(L, 1));
+					lua_replace(L, -2);
+				}
+			}
+
+			lua_getglobal(L, "debug");
+			if (!lua_istable(L, -1)) {
+				lua_pop(L, 1);
+				return 1;
+			}
+
+			lua_getfield(L, -1, "traceback");
+			if (!lua_isfunction(L, -1)) {
+				lua_pop(L, 2);
+				return 1;
+			}
+
+			lua_pushvalue(L, 1);  /* pass error message */
+			lua_pushinteger(L, 2);  /* skip this function and traceback */
+			lua_call(L, 2, 1);  /* call debug.traceback */
+
+			return 1;
+		}
+
 		// call function in protect mode
-		template <typename return_t, auto ptr, typename type_t = void, typename... args_t>
+		template <typename return_t, auto ptr, typename type_t = void, auto error_handler = &traceback, typename... args_t>
 		optional_result_t<return_t> call(args_t&&... args) {
 			IRIS_PROFILE_SCOPE(__FUNCTION__);
 
 			auto guard = write_fence();
 			lua_State* L = state;
 			stack_guard_t stack_guard(L);
+			push_variable<error_handler>(L);
 			push_variable<ptr, type_t>(L);
 
 			return call_internal<return_t>(L, std::forward<args_t>(args)...);
 		}
 
-		template <typename return_t, typename callable_t, typename... args_t>
+		template <typename return_t, typename callable_t, auto error_handler = &traceback, typename... args_t>
 		optional_result_t<return_t> call(callable_t&& reference, args_t&&... args) {
 			IRIS_PROFILE_SCOPE(__FUNCTION__);
 
 			auto guard = write_fence();
 			lua_State* L = state;
 			stack_guard_t stack_guard(L);
+			push_variable<error_handler>(L);
 			push_variable(L, std::forward<callable_t>(reference));
 			return call_internal<return_t>(L, std::forward<args_t>(args)...);
 		}
@@ -1806,20 +1840,23 @@ namespace iris {
 		template <typename return_t, typename... args_t>
 		static optional_result_t<return_t> call_internal(lua_State* L, args_t&&... args) {
 			lua_checkstack(L, sizeof...(args_t));
+			int top = lua_gettop(L);
 			push_arguments(L, std::forward<args_t>(args)...);
+			IRIS_ASSERT(top + sizeof...(args_t) == lua_gettop(L));
 
-			if (lua_pcall(L, sizeof...(args_t), std::is_void_v<return_t> ? 0 : 1, 0) == LUA_OK) {
+			if (lua_pcall(L, sizeof...(args_t), std::is_void_v<return_t> ? 0 : 1, top - 1) == LUA_OK) {
 				if constexpr (!std::is_void_v<return_t>) {
 					return_t result = get_variable<return_t>(L, -1);
-					lua_pop(L, 1);
+					lua_pop(L, 2);
 					return result;
 				} else {
+					lua_pop(L, 1);
 					return {};
 				}
 			} else {
 				// iris_lua_t::systrap(L, "error.resume", "iris_lua_t::call() -> call function failed! %s\n", luaL_optstring(L, -1, ""));
 				result_error_t ret(luaL_optstring(L, -1, ""));
-				lua_pop(L, 1);
+				lua_pop(L, 2);
 
 				return ret;
 			}

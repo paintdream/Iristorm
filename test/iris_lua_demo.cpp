@@ -568,6 +568,10 @@ static void test_functions(lua_t lua) {
 		}
 	};
 
+	auto result = lua.call<void>(lua.load("local function error_entry() error('must be error') end; local function error_entry2() error_entry() end; error_entry2()"));
+	IRIS_ASSERT(!result);
+	printf("Error with stack: %s\n", result.message.data());
+
 	lua.set_global("fmt_string", lua.make_string("hello %s", "world!"));
 	IRIS_ASSERT(lua.get_global<std::string>("fmt_string") == "hello world!");
 
