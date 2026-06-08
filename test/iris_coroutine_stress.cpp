@@ -58,6 +58,19 @@ static bool run_with_timeout(const char* name, std::chrono::milliseconds ms, fn_
 //   - large N (N coroutines per round)
 //   - many rounds
 //   - spawning each coroutine on a separate thread
+// Helper: GCC 12 lambda coroutines erroneously copy awaitables into the
+// coroutine frame.  Using a regular function with reference parameters
+// works around this (GCC correctly stores only references for function
+// parameters).  Same pattern as iris_coroutine_demo.cpp.
+template <typename barrier_t>
+static coroutine_t barrier_worker(barrier_t& barrier,
+                                   std::atomic<size_t>& launched,
+                                   std::atomic<size_t>& resumed) {
+	launched.fetch_add(1, std::memory_order_release);
+	co_await barrier;
+	resumed.fetch_add(1, std::memory_order_release);
+}
+
 static void test_barrier_race() {
 	using barrier_t = iris_barrier_t<void, bool, worker_t>;
 
@@ -72,20 +85,14 @@ static void test_barrier_race() {
 		std::atomic<size_t> resumed{ 0 };
 		std::atomic<size_t> launched{ 0 };
 
-		auto co = [&](size_t /*id*/) -> coroutine_t {
-			launched.fetch_add(1, std::memory_order_release);
-			co_await barrier;
-			resumed.fetch_add(1, std::memory_order_release);
-		};
-
 		// Launch from many threads to maximize fetch_add interleaving.
 		std::vector<std::thread> ts;
 		ts.reserve(N);
 		std::atomic<bool> go{ false };
 		for (size_t i = 0; i < N; i++) {
-			ts.emplace_back([&, i]() {
+			ts.emplace_back([&]() {
 				while (!go.load(std::memory_order_acquire)) { std::this_thread::yield(); }
-				co(i).run();
+				barrier_worker(barrier, launched, resumed).run();
 			});
 		}
 		go.store(true, std::memory_order_release);
@@ -172,6 +179,18 @@ static void test_quota_lost_wakeup() {
 // disables the rendezvous re-check; the producer can increment
 // prepared_count while the consumer increments waiting_count without either
 // observing the other, leading to a stale state and a missed delivery.
+// Helper: avoid GCC 12 lambda-coroutine copy of non-copyable awaitables.
+template <typename pipe_t>
+static coroutine_t pipe_consumer(pipe_t& pipe,
+                                  std::atomic<int>& consumed,
+                                  int N) {
+	for (int i = 0; i < N; i++) {
+		int v = co_await pipe;
+		(void)v;
+		consumed.fetch_add(1, std::memory_order_release);
+	}
+}
+
 static void test_pipe_spsc_race() {
 	using pipe_t = iris_pipe_t<int, void, worker_t>; // mutex_t defaults to iris_no_mutex_t
 
@@ -191,15 +210,7 @@ static void test_pipe_spsc_race() {
 		}
 	};
 
-	auto consumer = [&]() -> coroutine_t {
-		for (int i = 0; i < N; i++) {
-			int v = co_await pipe;
-			(void)v;
-			consumed.fetch_add(1, std::memory_order_release);
-		}
-	};
-
-	consumer().run();
+	pipe_consumer(pipe, consumed, N).run();
 	producer().run();
 
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -304,6 +315,14 @@ static void test_warp_suspend_resume_storm() {
 
 // ---------------------------------------------------------------------------
 // Test 6: iris_event_t - repeated notify/reset cycles with many waiters.
+// Helper: avoid GCC 12 lambda-coroutine copy of non-copyable awaitables.
+template <typename event_t>
+static coroutine_t event_waiter(event_t& ev,
+                                 std::atomic<size_t>& resumed) {
+	co_await ev;
+	resumed.fetch_add(1, std::memory_order_release);
+}
+
 static void test_event_cycle() {
 	using event_t = iris_event_t<void, worker_t>;
 
@@ -315,15 +334,10 @@ static void test_event_cycle() {
 	const size_t waiters_per_round = 16;
 	std::atomic<size_t> resumed{ 0 };
 
-	auto co = [&]() -> coroutine_t {
-		co_await ev;
-		resumed.fetch_add(1, std::memory_order_release);
-	};
-
 	for (size_t r = 0; r < rounds; r++) {
 		ev.reset();
 		size_t base = resumed.load(std::memory_order_acquire);
-		for (size_t i = 0; i < waiters_per_round; i++) co().run();
+		for (size_t i = 0; i < waiters_per_round; i++) event_waiter(ev, resumed).run();
 		// Give them a moment to suspend.
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 		ev.notify();
