@@ -610,6 +610,7 @@ void acquire_release() {
 	}
 }
 
+constexpr size_t parallel_count = 512;
 template <bool strand>
 static void accumulate() {
 	static constexpr size_t thread_count = 8;
@@ -624,13 +625,12 @@ static void accumulate() {
 		printf("---------------------------------\n");
 		size_t result = 0;
 		std::atomic<int> active_count = 0;
-		constexpr size_t parallel_factor = 512;
 		active_count.fetch_add(1, std::memory_order_relaxed);
-		for (size_t i = 0; i < parallel_factor; i++) {
+		for (size_t i = 0; i < parallel_count; i++) {
 			active_count.fetch_add(1, std::memory_order_relaxed);
 			main_warp.queue_routine_parallel_post([i, &main_warp, &result, &active_count]() {
 				size_t sum = 0;
-				for (size_t n = 0; n < (parallel_factor - i); n++) {
+				for (size_t n = 0; n < (parallel_count - i); n++) {
 					sum = sum + n * n;
 				}
 
@@ -639,7 +639,7 @@ static void accumulate() {
 				}
 
 				main_warp.queue_routine([sum, i, &result]() {
-					if (i % 100 == 0 || i == parallel_factor - 1) {
+					if (i % 100 == 0 || i == parallel_count - 1) {
 						printf("accumulate summary checkpoint %d. (may appears before compute completed)\n", (int)i);
 					}
 
