@@ -254,8 +254,8 @@ namespace iris {
 				return true;
 			}
 
-			std::atomic<size_t> barrier_version;
 			std::vector<queue_buffer_t> queue_buffers;
+			std::atomic<size_t> barrier_version;
 			std::vector<size_t> queue_versions;
 			size_t current_version;
 			size_t next_version;
@@ -288,7 +288,7 @@ namespace iris {
 			queueing.store(queue_state_t::idle, std::memory_order_release);
 		}
 
-		iris_warp_t(iris_warp_t&& rhs) noexcept : async_worker(rhs.async_worker), storage(std::move(rhs.storage)), priority(rhs.priority), stack_next_warp(rhs.stack_next_warp) {
+		iris_warp_t(iris_warp_t&& rhs) noexcept : async_worker(rhs.async_worker), priority(rhs.priority), stack_next_warp(rhs.stack_next_warp), storage(std::move(rhs.storage)) {
 			thread_warp.store(rhs.thread_warp.load(std::memory_order_relaxed), std::memory_order_relaxed);
 			parallel_task_head.store(rhs.parallel_task_head.load(std::memory_order_relaxed), std::memory_order_relaxed);
 			suspend_count.store(rhs.suspend_count.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -844,13 +844,13 @@ namespace iris {
 
 	protected:
 		async_worker_t& async_worker; // host async worker
+		size_t priority;
+		iris_warp_t* stack_next_warp;
 		std::atomic<iris_warp_t**> thread_warp; // save the running thread warp address.
 		std::atomic<size_t> suspend_count; // current suspend count
 		std::atomic<queue_state_t> queueing; // is flush request sent to async_worker? 0 : not yet, 1 : yes, 2 : is to flush right away.
 		std::atomic<task_t*> parallel_task_head; // linked-list for pending parallel tasks
 		typename std::conditional<strand, chain_storage_t, grid_storage_t>::type storage; // task storage
-		size_t priority;
-		iris_warp_t* stack_next_warp;
 	};
 
 	// dispatcher based-on directed-acyclic graph
