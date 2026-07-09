@@ -54,6 +54,13 @@ SOFTWARE.
 #define IRIS_DEFAULT_PAGE_SIZE (IRIS_DEFAULT_BLOCK_SIZE * 64)
 #endif
 
+// destructive interference size (a.k.a. false-sharing granularity).
+// 64 covers x86-64 and most ARM; override with 128 for platforms whose
+// prefetcher pulls cache-line pairs (e.g. Apple Silicon, some POWER).
+#ifndef IRIS_CACHE_LINE_SIZE
+#define IRIS_CACHE_LINE_SIZE (64)
+#endif
+
 #ifndef IRIS_PROFILE_THREAD
 #define IRIS_PROFILE_THREAD(name, i)
 #endif
@@ -89,6 +96,7 @@ SOFTWARE.
 namespace iris {
 	static constexpr size_t default_block_size = IRIS_DEFAULT_BLOCK_SIZE;
 	static constexpr size_t default_page_size = IRIS_DEFAULT_PAGE_SIZE;
+	static constexpr size_t default_cache_line_size = IRIS_CACHE_LINE_SIZE;
 
 	// debug utilities for multi-thread programming
 	template <typename atomic_t>

@@ -843,9 +843,21 @@ namespace iris {
 		}
 
 	protected:
+		// immutable descriptor: read by any thread that posts tasks into this warp
+		// (queue_routine_post/flush read priority, push/flush read async_worker).
+		// It never changes after construction, so keep it apart from the hot atomics
+		// below to prevent remote readers from ping-ponging the writers' cache line.
 		async_worker_t& async_worker; // host async worker
 		size_t priority;
-		iris_warp_t* stack_next_warp;
+
+		// hot scheduling/execution state, mutated from the executing thread and from
+		// remote posters. Pinned to a fresh cache line (via alignas) so that:
+		//   1. it no longer shares a line with the read-only descriptor above, and
+		//   2. combined with the type-level alignas(default_cache_line_size), sibling
+		//      warps stored contiguously (e.g. std::vector<iris_warp_t>) never straddle
+		//      the same cache line.
+		size_t _cacheline_paddings[6];
+		/* alignas(default_cache_line_size) */ iris_warp_t* stack_next_warp;
 		std::atomic<iris_warp_t**> thread_warp; // save the running thread warp address.
 		std::atomic<size_t> suspend_count; // current suspend count
 		std::atomic<queue_state_t> queueing; // is flush request sent to async_worker? 0 : not yet, 1 : yes, 2 : is to flush right away.
@@ -1150,7 +1162,7 @@ namespace iris {
 		using large_task_allocator_t = allocator_t<large_task_t>;
 		using root_allocator_t = typename task_allocator_t::root_allocator_t;
 
-		iris_async_worker_t() : waiting_thread_count(0), limit_count(0), internal_thread_count(0), priority_task_threshold(0) {
+		iris_async_worker_t() : internal_thread_count(0), priority_task_threshold(0), waiting_thread_count(0), limit_count(0) {
 			proxy_get_current_thread_index = &iris_async_worker_t::get_current_thread_index_internal;
 			priority_task_handler = [](task_base_t*, size_t&) { return false; };
 			task_allocator_index.store(0, std::memory_order_relaxed);
@@ -1372,7 +1384,7 @@ namespace iris {
 		// task with priority == ~(size_t)0 will be filterred
 		void queue_task(task_base_t* task, size_t priority = 0) {
 			IRIS_ASSERT(task != nullptr && task->next == nullptr);
-			if (static_cast<ptrdiff_t>(priority) < 0 && priority_task_handler(task, priority)) {
+			if (static_cast<ptrdiff_t>(priority) < static_cast<ptrdiff_t>(priority_task_threshold) && priority_task_handler(task, priority)) {
 				return;
 			}
 
@@ -1608,22 +1620,39 @@ namespace iris {
 		}
 
 	protected:
+		// --- read-mostly / immutable control block ---
+		// Established during construction/start() and afterwards only read on the hot
+		// paths (thread-index lookup, threads.size(), task_heads[] indexing, is_terminated()).
+		// Grouped together and kept off the mutated cache lines below so that frequent
+		// writes elsewhere never invalidate this line for the many readers.
 		size_t& (*proxy_get_current_thread_index)();
-		large_task_allocator_t large_task_allocator;
-		task_allocator_t task_allocators[sub_allocator_count]; // default task allocator
 		std::vector<thread_t> threads; // worker
-		std::atomic<size_t> task_allocator_index; // index for selecting task allocator
-		std::atomic<size_t> running_count; // running_count
-		std::atomic<size_t> task_count; // the count of total waiting tasks 
 		std::vector<std::atomic<task_base_t*>> task_heads; // task pointer list
-		std::mutex mutex; // mutex to protect condition
-		std::condition_variable condition; // condition variable for idle wait
-		std::atomic<size_t> terminated; // is to terminate
-		size_t waiting_thread_count; // thread count of waiting on condition variable
-		size_t limit_count; // limit the count of concurrently running thread
 		size_t internal_thread_count; // the count of internal thread
 		size_t priority_task_threshold;
 		std::function<bool(task_base_t*, size_t&)> priority_task_handler;
+		std::atomic<size_t> terminated; // is to terminate
+
+		// --- hot, independently updated counters ---
+		// Each is hammered by every producer/worker thread and they are logically
+		// unrelated, so give each its own cache line to remove cross-counter false
+		// sharing. The worker is effectively a singleton, so this padding is paid at
+		// most once per pool.
+		alignas(default_cache_line_size) std::atomic<size_t> task_allocator_index; // index for selecting task allocator
+		alignas(default_cache_line_size) std::atomic<size_t> running_count; // running_count
+		alignas(default_cache_line_size) std::atomic<size_t> task_count; // the count of total waiting tasks
+
+		// --- task allocators (sharded, written on every alloc/free) ---
+		// Started on a fresh cache line so allocator bookkeeping never collides with
+		// the counters above.
+		alignas(default_cache_line_size) large_task_allocator_t large_task_allocator;
+		task_allocator_t task_allocators[sub_allocator_count]; // default task allocator
+
+		// --- idle-wait slow path + fields mutated around the mutex ---
+		alignas(default_cache_line_size) std::mutex mutex; // mutex to protect condition
+		std::condition_variable condition; // condition variable for idle wait
+		size_t waiting_thread_count; // thread count of waiting on condition variable
+		size_t limit_count; // limit the count of concurrently running thread
 	};
 
 	template <typename async_worker_t>
