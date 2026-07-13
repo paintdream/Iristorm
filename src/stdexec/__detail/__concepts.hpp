@@ -1,0 +1,347 @@
+/*
+ * Copyright (c) 2023 NVIDIA Corporation
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#if __cpp_concepts < 201907L
+#  error This library requires support for C++20 concepts
+#endif
+
+#include "__config.hpp"
+#include "__type_traits.hpp"
+
+#include <utility>  // IWYU pragma: keep for std::swap
+#include <version>
+
+#if !STDEXEC_NO_STDCPP_CONCEPTS_HEADER()
+#  include <concepts>
+#else
+#  include <type_traits>
+#endif
+
+#include "__prologue.hpp"
+
+namespace STDEXEC
+{
+  //////////////////////////////////////////////////////////////////////////////////////////////////
+  template <class _Fun, class... _As>
+  concept __callable = requires(_Fun &&__fun, _As &&...__as) {
+    static_cast<_Fun &&>(__fun)(static_cast<_As &&>(__as)...);
+  };
+
+  template <class _Fun, class... _As>
+  concept __nothrow_callable = __callable<_Fun, _As...> && requires(_Fun &&__fun, _As &&...__as) {
+    { static_cast<_Fun &&>(__fun)(static_cast<_As &&>(__as)...) } noexcept;
+  };
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////
+  template <class...>
+  struct __mlist;
+
+  template <class... _Ts>
+  concept __typename = requires {
+    typename __mlist<_Ts...>;  // NOLINT
+  };
+
+  //////////////////////////////////////////////////////////////////////////////////////////////////
+  template <class _Ap, class _Bp>
+  concept __same_as = STDEXEC_IS_SAME(_Ap, _Bp);
+
+  template <class _Ap, class _Bp>
+  concept __not_same_as = !STDEXEC_IS_SAME(_Ap, _Bp);
+
+  // Handy concepts
+  template <class _Ty, class _Up>
+  concept __decays_to = __same_as<__decay_t<_Ty>, _Up>;
+
+  template <class _Ty, class _Up>
+  concept __not_decays_to = !__decays_to<_Ty, _Up>;
+
+  template <bool _TrueOrFalse>
+  concept __satisfies = _TrueOrFalse;
+
+  template <class...>
+  concept __true = true;
+
+  template <class _Cp>
+  concept __class = __true<int _Cp::*> && (!__same_as<_Cp const, _Cp>);
+
+  template <class _Ty, class... _As>
+  concept __one_of = (__same_as<_Ty, _As> || ...);
+
+  template <class _Ty, class... _Us>
+  concept __all_of = (__same_as<_Ty, _Us> && ...);
+
+  template <class _Ty, class... _Us>
+  concept __none_of = (__not_same_as<_Ty, _Us> && ...);
+
+  template <class, template <class...> class>
+  constexpr bool __is_instance_of_ = false;
+
+  template <class... _As, template <class...> class _Ty>
+  constexpr bool __is_instance_of_<_Ty<_As...>, _Ty> = true;
+
+  template <class _Ay, template <class...> class _Ty>
+  concept __is_instance_of = __is_instance_of_<_Ay, _Ty>;
+
+  template <class _Ay, template <class...> class _Ty>
+  concept __is_not_instance_of = !__is_instance_of<_Ay, _Ty>;
+
+  template <auto>
+  concept __constant = true;
+
+  namespace __detail
+  {
+    template <auto>
+    using __is_nttp = void;
+    template <class _Ty, template <_Ty> class>
+    using __nttp_test = void;
+  }  // namespace __detail
+
+  template <class _Ty>
+  concept __structural = requires { typename __detail::__nttp_test<_Ty, __detail::__is_nttp>; };
+
+  static_assert(__structural<int>);
+
+  namespace __std
+  {
+
+    // Make sure we're using a same_as concept that doesn't instantiate a class template
+    // (i.e., std::is_same)
+    template <class _Ap, class _Bp>
+    concept same_as = __same_as<_Ap, _Bp> && __same_as<_Bp, _Ap>;
+
+#if !STDEXEC_NO_STDCPP_CONCEPTS_HEADER()
+
+    using std::integral;
+    using std::derived_from;
+    using std::convertible_to;
+    using std::equality_comparable;
+
+#else
+
+    template <class T>
+    concept integral = std::is_integral_v<T>;
+
+    template <class _Ap, class _Bp>
+    concept derived_from = STDEXEC_IS_BASE_OF(_Bp, _Ap)
+                        && STDEXEC_IS_CONVERTIBLE_TO(_Ap const volatile *, _Bp const volatile *);
+
+    template <class _From, class _To>
+    concept convertible_to = STDEXEC_IS_CONVERTIBLE_TO(_From, _To)
+                          && requires(__declfn_t<_From> __fun) { static_cast<_To>(__fun()); };
+
+    template <class _Ty>
+    concept equality_comparable = requires(__cref_t<_Ty> __t) {
+      { __t == __t } -> convertible_to<bool>;
+      { __t != __t } -> convertible_to<bool>;
+    };
+#endif
+  }  // namespace __std
+
+  // Not exactly right, but close.
+  template <class _Ty>
+  concept __boolean_testable_ = __std::convertible_to<_Ty, bool>;
+
+  namespace __detail
+  {
+    template <class _Ty>
+    inline constexpr bool __destructible_ = requires(__declfn_t<_Ty &&> __fn) {
+      { __fn().~_Ty() } noexcept;
+    };
+
+    template <class _Ty>
+    inline constexpr bool __destructible_<_Ty &> = true;
+
+    template <class _Ty>
+    inline constexpr bool __destructible_<_Ty &&> = true;
+
+    template <class _Ty, std::size_t _Np>
+    inline constexpr bool __destructible_<_Ty[_Np]> = __destructible_<_Ty>;
+  }  // namespace __detail
+
+  namespace __std
+  {
+    //////////////////////////////////////////////////////////////////////////////////////////////////
+    // Avoid using libstdc++'s object concepts because they instantiate a
+    // LOT of templates.
+
+#if STDEXEC_HAS_BUILTIN(__is_nothrow_destructible) || STDEXEC_MSVC()
+    template <class _Ty>
+    concept destructible = __is_nothrow_destructible(_Ty);
+#else   // ^^^ has __is_nothrow_destructible / no __is_nothrow_destructible vvv
+    template <class T>
+    concept destructible = __detail::__destructible_<T>;
+#endif  // ^^^ no __is_nothrow_destructible
+
+    template <class _Ty, class... _As>
+    concept constructible_from = destructible<_Ty> && STDEXEC_IS_CONSTRUCTIBLE(_Ty, _As...);
+
+    template <class _Ty>
+    concept default_initializable = constructible_from<_Ty> && requires { _Ty{}; }
+                                 && requires { ::new _Ty; };
+
+    template <class _Ty>
+    concept move_constructible = constructible_from<_Ty, _Ty>;
+
+    template <class _Ty>
+    concept copy_constructible = move_constructible<_Ty> && constructible_from<_Ty, _Ty const &>;
+
+    template <class _LHS, class _RHS>
+    concept assignable_from = __std::same_as<_LHS, _LHS &> &&
+                              // std::common_reference_with<
+                              //   const std::remove_reference_t<_LHS>&,
+                              //   const std::remove_reference_t<_RHS>&> &&
+                              requires(_LHS __lhs, _RHS &&__rhs) {
+                                { __lhs = static_cast<_RHS &&>(__rhs) } -> __std::same_as<_LHS>;
+                              };
+
+    namespace __swap
+    {
+      using std::swap;
+
+      template <class _Ty, class _Uy>
+      concept swappable_with = requires(_Ty &&__t, _Uy &&__u) {
+        swap(static_cast<_Ty &&>(__t), static_cast<_Uy &&>(__u));
+      };
+
+      inline constexpr auto const __fn =
+        []<class _Ty, swappable_with<_Ty> _Uy>(_Ty &&__t, _Uy &&__u) noexcept(
+          noexcept(swap(static_cast<_Ty &&>(__t), static_cast<_Uy &&>(__u))))
+      {
+        swap(static_cast<_Ty &&>(__t), static_cast<_Uy &&>(__u));
+      };
+    }  // namespace __swap
+
+    using __swap::swappable_with;
+
+    inline constexpr auto const &swap = __swap::__fn;
+
+    template <class _Ty>
+    concept swappable = requires(_Ty &a, _Ty &b) { swap(a, b); };
+
+    template <class _Ty>
+    concept movable = std::is_object_v<_Ty>        //
+                   && move_constructible<_Ty>      //
+                   && assignable_from<_Ty &, _Ty>  //
+                   && swappable<_Ty>;
+
+    template <class _Ty>
+    concept copyable = copy_constructible<_Ty>              //
+                    && movable<_Ty>                         //
+                    && assignable_from<_Ty &, _Ty &>        //
+                    && assignable_from<_Ty &, _Ty const &>  //
+                    && assignable_from<_Ty &, _Ty const>;
+
+    template <class _Ty>
+    concept semiregular = copyable<_Ty>  //
+                       && default_initializable<_Ty>;
+
+    template <class _Ty>
+    concept regular = semiregular<_Ty>  //
+                   && equality_comparable<_Ty>;
+
+    template <class T, class U>
+    concept __partially_ordered_with = requires(__cref_t<T> t, __cref_t<U> u) {
+      { t < u } -> __boolean_testable_;
+      { t > u } -> __boolean_testable_;
+      { t <= u } -> __boolean_testable_;
+      { t >= u } -> __boolean_testable_;
+      { u < t } -> __boolean_testable_;
+      { u > t } -> __boolean_testable_;
+      { u <= t } -> __boolean_testable_;
+      { u >= t } -> __boolean_testable_;
+    };
+
+    template <class _Ty>
+    concept totally_ordered = equality_comparable<_Ty> && __partially_ordered_with<_Ty, _Ty>;
+
+  }  // namespace __std
+
+  template <class _Ty, class... _As>
+  concept __initializable_from = requires(__declfn_t<_As &&>... __as) {
+    { _Ty{__as()...} };
+  };
+
+  template <class _Ty, class... _As>
+  concept __nothrow_initializable_from = requires(__declfn_t<_As &&>... __as) {
+    { _Ty{__as()...} } noexcept;
+  };
+
+  template <class _Ty>
+  concept __movable_value = __std::move_constructible<__decay_t<_Ty>>
+                         && __std::constructible_from<__decay_t<_Ty>, _Ty>;
+
+  template <class _Ty>
+  concept __nothrow_movable_value = __movable_value<_Ty>  //
+                                 && requires(__declfn_t<_Ty &&> __t) {
+                                      { __decay_t<_Ty>(__decay_t<_Ty>(__t())) } noexcept;
+                                    };
+
+  template <class _Ty, class... _As>
+  concept __nothrow_constructible_from = __std::constructible_from<_Ty, _As...>
+                                      && STDEXEC_IS_NOTHROW_CONSTRUCTIBLE(_Ty, _As...);
+
+  template <class... _Ts>
+  concept __nothrow_move_constructible = (__nothrow_constructible_from<_Ts, _Ts> && ...);
+
+  template <class... _Ts>
+  concept __nothrow_copy_constructible = (__nothrow_constructible_from<_Ts, _Ts const &> && ...);
+
+  template <class _Ty, class _A>
+  concept __assignable_from = STDEXEC_IS_ASSIGNABLE(_Ty, _A);
+
+  template <class _Ty, class _A>
+  concept __nothrow_assignable_from = STDEXEC_IS_NOTHROW_ASSIGNABLE(_Ty, _A);
+
+  template <class... _Ts>
+  concept __move_assignable = (__assignable_from<_Ts, _Ts> && ...);
+
+  template <class... _Ts>
+  concept __nothrow_move_assignable = (__nothrow_assignable_from<_Ts, _Ts> && ...);
+
+  template <class... _Ts>
+  concept __copy_assignable = (__assignable_from<_Ts, _Ts const &> && ...);
+
+  template <class... _Ts>
+  concept __nothrow_copy_assignable = (__nothrow_assignable_from<_Ts, _Ts const &> && ...);
+
+  template <class... _Ts>
+  concept __decay_copyable = (__std::constructible_from<__decay_t<_Ts>, _Ts> && ...);
+
+  template <class... _Ts>
+  using __decay_copyable_t = __mbool<__decay_copyable<_Ts...>>;
+
+  template <class... _Ts>
+  concept __nothrow_decay_copyable = (__nothrow_constructible_from<__decay_t<_Ts>, _Ts> && ...);
+
+  template <class... _Ts>
+  using __nothrow_decay_copyable_t = __mbool<__nothrow_decay_copyable<_Ts...>>;
+
+  template <class _Ty, class _Up>
+  concept __decays_to_derived_from = __std::derived_from<__decay_t<_Ty>, _Up>;
+
+  // See [allocator.requirements.general]/p99 (https://eel.is/c++draft/allocator.requirements.general#99)
+  template <class _Alloc>
+  concept __simple_allocator =  //
+    requires(_Alloc __alloc, std::size_t __count) {
+      { *__alloc.allocate(__count) } -> __std::same_as<typename _Alloc::value_type &>;
+      __alloc.deallocate(__alloc.allocate(__count), __count);
+    }  //
+    && __std::copy_constructible<_Alloc>  //
+    && __std::equality_comparable<_Alloc>;
+}  // namespace STDEXEC
+
+#include "__epilogue.hpp"

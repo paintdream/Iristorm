@@ -1,0 +1,308 @@
+/*
+ * Copyright (c) 2025 Ian Petersen
+ * Copyright (c) 2025 NVIDIA Corporation
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include "__execution_fwd.hpp"
+
+#include "__env.hpp"
+#include "__receivers.hpp"
+#include "__scope.hpp"
+#include "__scope_concepts.hpp"
+#include "__sender_concepts.hpp"
+#include "__spawn_common.hpp"
+#include "__type_traits.hpp"
+#include "__write_env.hpp"
+
+#include <memory>
+#include <type_traits>
+#include <utility>
+
+#include "__prologue.hpp"
+
+namespace STDEXEC
+{
+  /////////////////////////////////////////////////////////////////////////////
+  // [exec.spawn]
+  namespace __spawn
+  {
+    struct __spawn_state_base
+    {
+      explicit __spawn_state_base(void (*__complete)(__spawn_state_base*) noexcept) noexcept
+        : __complete_(__complete)
+      {}
+
+      __spawn_state_base(__spawn_state_base&&) = delete;
+
+      void __complete() noexcept
+      {
+        __complete_(this);
+      }
+
+     protected:
+      ~__spawn_state_base() = default;
+
+     private:
+      void (*__complete_)(__spawn_state_base*) noexcept;
+    };
+
+    struct __spawn_receiver
+    {
+      using receiver_concept = receiver_tag;
+
+      __spawn_state_base* __state_;
+
+      void set_value() && noexcept
+      {
+        __state_->__complete();
+      }
+
+      void set_stopped() && noexcept
+      {
+        __state_->__complete();
+      }
+    };
+
+    template <class _Alloc, scope_token _Token, sender _Sender>
+    struct __spawn_state final : __spawn_state_base
+    {
+      using __op_t = connect_result_t<_Sender, __spawn_receiver>;
+
+      __spawn_state(_Alloc __alloc, _Sender&& __sndr, _Token __token)
+        : __spawn_state_base(__do_complete)
+        , __alloc_(std::move(__alloc))
+        , __op_(connect(std::move(__sndr), __spawn_receiver(this)))
+        , __assoc_(__token.try_associate())
+      {}
+
+      void __run() noexcept
+      {
+        if (__assoc_)
+        {
+          start(__op_);
+        }
+        else
+        {
+          __complete();
+        }
+      }
+
+     private:
+      using __assoc_t = std::remove_cvref_t<decltype(__declval<_Token&>().try_associate())>;
+
+      _Alloc    __alloc_;
+      __op_t    __op_;
+      __assoc_t __assoc_;
+
+      static void __do_complete(__spawn_state_base* __base) noexcept
+      {
+        auto* __self = static_cast<__spawn_state*>(__base);
+
+        [[maybe_unused]]
+        auto __assoc = std::move(__self->__assoc_);
+
+        {
+          using __traits = std::allocator_traits<_Alloc>::template rebind_traits<__spawn_state>;
+          typename __traits::allocator_type __alloc(std::move(__self->__alloc_));
+          __traits::destroy(__alloc, __self);
+          __traits::deallocate(__alloc, __self, 1);
+        }
+      }
+    };
+  }  // namespace __spawn
+
+  //! @brief A sender consumer that eagerly starts a sender and ties its
+  //!        lifetime to an *async scope*.
+  //!
+  //! @c spawn is the standard "fire-and-forget into a scope" consumer.
+  //! You give it a sender, a @c scope_token (a handle to an async scope),
+  //! and optionally an environment, and @c spawn:
+  //!
+  //! 1. allocates an operation state on the heap (using an allocator
+  //!    queried from the environment or the sender's own environment),
+  //! 2. tries to associate the resulting operation with the scope via
+  //!    <tt>token.try_associate()</tt>,
+  //! 3. if the association succeeds, eagerly @c start s the operation,
+  //!    and on completion deallocates the state and releases the scope
+  //!    association.
+  //!
+  //! If association fails (typically because the scope has already begun
+  //! shutting down), @c spawn destroys the state and returns without
+  //! starting the operation. The result of the sender, if any, is
+  //! discarded — @c spawn returns @c void.
+  //!
+  //! See [exec.spawn] in the C++26 working draft for the normative
+  //! specification.
+  //!
+  //! @code{.cpp}
+  //! exec::async_scope scope;
+  //!
+  //! stdexec::spawn(stdexec::just(42) | stdexec::then([](int x) {
+  //!   std::println("background work produced {}", x);
+  //! }), scope.get_token());
+  //!
+  //! // Later, before destroying scope:
+  //! stdexec::sync_wait(scope.join());
+  //! @endcode
+  //!
+  //! **Completion requirements.**
+  //!
+  //! The argument sender must not be able to complete with @c set_error
+  //! — @c spawn cannot deliver an error to a non-existent caller. The
+  //! @c requires clause enforces this with a
+  //! <tt>__never_sends<set_error_t, ...></tt> check; the diagnostic
+  //! overload says "spawn expects a sender that cannot fail" if the check
+  //! fires.
+  //!
+  //! Successful and stopped completions are both accepted; their results
+  //! are discarded.
+  //!
+  //! **Scope semantics.**
+  //!
+  //! The scope is the *owner of lifetime* for the spawned operation.
+  //! Calling code is expected to eventually @c join() the scope (or
+  //! otherwise wait for all spawned work to drain) before destroying it
+  //! — typically once at program shutdown, or once per logical unit of
+  //! related background work.
+  //!
+  //! @c spawn is the canonical fire-and-forget consumer for any work
+  //! that has a clear "owning context" (a request, a session, a worker).
+  //! For top-level work with no owning scope, use @c exec::start_detached
+  //! (an stdexec extension). For fire-and-forget work whose completion
+  //! you want to *observe* (without blocking), use
+  //! @c stdexec::spawn_future.
+  //!
+  //! @see stdexec::spawn_future   — like @c spawn, but returns a sender that completes
+  //!                                when the spawned work completes
+  //! @see exec::start_detached    — scope-less fire-and-forget (extension)
+  //! @see stdexec::sync_wait      — top-level synchronous wait that returns the result
+  struct spawn_t
+  {
+   private:
+    template <class _Sender, class _Token>
+    using _wrapped_sender_t = decltype(__declval<_Token&>().wrap(__declval<_Sender>()));
+
+    template <class _Sender, class _Env>
+    using __choose_senv_t = __result_of<__spawn_common::__choose_senv, _Env, env_of_t<_Sender>>;
+
+    template <class _Sender, class _Env>
+    using _spawn_sndr_impl_t = __result_of<write_env, _Sender, __choose_senv_t<_Sender, _Env>>;
+
+    template <class _Sender, class _Token, class _Env>
+    using _spawn_sndr_t = _spawn_sndr_impl_t<_wrapped_sender_t<_Sender, _Token>, _Env>;
+
+   public:
+    //! @brief Spawn @c __sndr into the scope identified by @c __tkn, using
+    //!        a default (empty) environment.
+    //!
+    //! Equivalent to <tt>spawn(__sndr, __tkn, env<>{})</tt>.
+    //!
+    //! @tparam _Sender A sender type with no @c set_error_t completions.
+    //! @tparam _Token  A type satisfying @c stdexec::scope_token.
+    //! @param __sndr   The sender to launch.
+    //! @param __tkn    The scope token identifying the owning scope.
+    template <sender _Sender, scope_token _Token>
+    void operator()(_Sender&& __sndr, _Token __tkn) const
+    {
+      return (*this)(static_cast<_Sender&&>(__sndr), static_cast<_Token&&>(__tkn), env<>{});
+    }
+
+    // Hidden from Doxygen: this diagnostic-only overload shares its signature
+    // with the primary three-argument overload above (they differ only by a
+    // constraint), which the Sphinx C++ domain cannot disambiguate.
+#if !defined(STDEXEC_DOXYGEN_INVOKED)
+    //! @brief Diagnostic overload — selected when the sender's completion
+    //!        signatures include @c set_error_t. Emits a @c static_assert
+    //!        explaining that @c spawn expects a sender that cannot fail.
+    //!
+    //! Not normally called; the @c requires clause on the primary overload
+    //! steers compilation here on a constraint failure.
+    template <sender _Sender, scope_token _Token, class _Env>
+    void operator()(_Sender&&, _Token, _Env&&) const
+    {
+      using _spawn_sndr_t = spawn_t::_spawn_sndr_t<_Sender, _Token, _Env>;
+      static_assert(sender_in<_spawn_sndr_t, _Env>
+                      && __never_sends<STDEXEC::set_error_t, _spawn_sndr_t, _Env>,
+                    "spawn expects a sender that cannot fail");
+    }
+#endif  // !defined(STDEXEC_DOXYGEN_INVOKED)
+
+    //! @brief Spawn @c __sndr into the scope identified by @c __tkn, using
+    //!        the allocator queried from @c __env.
+    //!
+    //! Allocates the operation state on the heap (using
+    //! <tt>stdexec::get_allocator(__env)</tt>, falling back to
+    //! @c std::allocator), associates with the scope via
+    //! <tt>__tkn.try_associate()</tt>, and on success @c start s the
+    //! operation. On completion the state is destroyed and deallocated.
+    //!
+    //! @tparam _Sender A sender type with no @c set_error_t completions.
+    //! @tparam _Token  A type satisfying @c stdexec::scope_token.
+    //! @tparam _Env    An environment type; queried for an allocator.
+    //!
+    //! @param __sndr   The sender to launch.
+    //! @param __tkn    The scope token identifying the owning scope.
+    //! @param __env    Environment used both for allocator lookup and as
+    //!                 the spawned operation's receiver environment.
+    //!
+    //! @pre @c __sndr must not be able to complete with @c set_error
+    //!      (enforced by the @c requires clause).
+    template <sender _Sender, scope_token _Token, class _Env>
+      requires __never_sends<STDEXEC::set_error_t, _spawn_sndr_t<_Sender, _Token, _Env>, _Env>
+    void operator()(_Sender&& __sndr, _Token __tkn, _Env&& __env) const
+    {
+      auto __wrapped_sender = __tkn.wrap(static_cast<_Sender&&>(__sndr));
+      auto __sndr_env       = get_env(__wrapped_sender);
+
+      auto __raw_alloc    = __spawn_common::__choose_alloc(__env, __sndr_env);
+      using __raw_alloc_t = decltype(__raw_alloc);
+
+      auto __sender_with_env = write_env(std::move(__wrapped_sender),
+                                         __spawn_common::__choose_senv(__env, __sndr_env));
+
+      using __spawn_state_t =
+        __spawn::__spawn_state<__raw_alloc_t, _Token, decltype(__sender_with_env)>;
+
+      using __traits =
+        std::allocator_traits<__raw_alloc_t>::template rebind_traits<__spawn_state_t>;
+      typename __traits::allocator_type __alloc(__raw_alloc);
+
+      auto* __op = __traits::allocate(__alloc, 1);
+
+      __scope_guard __guard{[&]() noexcept { __traits::deallocate(__alloc, __op, 1); }};
+
+      __traits::construct(__alloc,
+                          __op,
+                          __alloc,
+                          std::move(__sender_with_env),
+                          static_cast<_Token&&>(__tkn));
+
+      __guard.__dismiss();
+
+      __op->__run();
+    }
+  };
+
+  //! @brief The customization point object for the @c spawn sender consumer.
+  //!
+  //! @c spawn is an instance of @ref spawn_t. See @ref spawn_t for the full
+  //! description, scope semantics, and a usage example.
+  //!
+  //! @hideinitializer
+  inline constexpr spawn_t spawn{};
+}  // namespace STDEXEC
+
+#include "__epilogue.hpp"

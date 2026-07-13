@@ -1,0 +1,72 @@
+/*
+ * Copyright (c) 2021-2024 NVIDIA Corporation
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include "__execution_fwd.hpp"
+
+// include these after __execution_fwd.hpp
+#include "__completion_signatures.hpp"  // IWYU pragma: export
+#include "__connect.hpp"                // IWYU pragma: export
+#include "__sender_concepts.hpp"        // IWYU pragma: export
+
+#include "__prologue.hpp"
+
+namespace STDEXEC
+{
+  /////////////////////////////////////////////////////////////////////////////
+  // [exec.snd]
+  namespace __detail
+  {
+    template <class _Sig>
+    extern __undefined<_Sig> __signature_tag_v;
+
+    template <class _Tag, class... _Args>
+    extern _Tag __signature_tag_v<_Tag(_Args...)>;
+
+    template <class _Tag, class... _Args>
+    extern _Tag __signature_tag_v<_Tag (*)(_Args...)>;
+
+    template <class _Error>
+      requires false
+    using __nofail_t = _Error;
+  }  // namespace __detail
+
+  template <class _Sig>
+  using __signature_tag_t = decltype(__detail::__signature_tag_v<_Sig>);
+
+  template <class _Sender, class _SetSig, class... _Env>
+  concept sender_of =
+    sender_in<_Sender, _Env...>
+    && __same_as<__mlist<_SetSig>,
+                 __gather_completions_t<__signature_tag_t<_SetSig>,
+                                        __completion_signatures_of_t<_Sender, _Env...>,
+                                        __mcompose<__qq<__mlist>, __qf<__signature_tag_t<_SetSig>>>,
+                                        __mconcat<__qq<__mlist>>>>;
+
+  template <class _Sender, class... _Env>
+  concept __nofail_sender = __never_sends<set_error_t, _Sender, _Env...>;
+
+  /////////////////////////////////////////////////////////////////////////////
+  // early sender type-checking
+  template <class _Sender>
+  concept __well_formed_sender = sender_in<_Sender> || dependent_sender<_Sender>;
+
+  template <__well_formed_sender _Sender>
+  constexpr void __ensure_well_formed_sender() noexcept
+  {}
+}  // namespace STDEXEC
+
+#include "__epilogue.hpp"

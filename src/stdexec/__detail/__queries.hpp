@@ -1,0 +1,110 @@
+/*
+ * Copyright (c) 2025 NVIDIA Corporation
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include "__execution_fwd.hpp"
+
+// include these after __execution_fwd.hpp
+#include "__completion_behavior.hpp"
+#include "__concepts.hpp"
+#include "__config.hpp"
+#include "__query.hpp"
+
+#include "__prologue.hpp"
+
+namespace STDEXEC
+{
+  //////////////////////////////////////////////////////////////////////////////////////////////////
+  // [exec.queries]
+
+  // [exec.get.await.adapt]
+  struct get_await_completion_adaptor_t : __query<get_await_completion_adaptor_t>
+  {
+    template <class _Env>
+    STDEXEC_ATTRIBUTE(always_inline, host, device)
+    static constexpr void __validate() noexcept
+    {
+      static_assert(STDEXEC::__nothrow_callable<get_await_completion_adaptor_t, _Env const &>);
+    }
+
+    STDEXEC_ATTRIBUTE(nodiscard, always_inline, host, device)
+    static consteval auto query(forwarding_query_t) noexcept -> bool
+    {
+      return true;
+    }
+  };
+
+  inline constexpr get_await_completion_adaptor_t get_await_completion_adaptor{};
+
+  // The attributes of a sender adaptor that does not introduce asynchrony.
+  template <class _Sender>
+  struct __sync_attrs
+  {
+    template <class _Tag, class... _Env>
+    [[nodiscard]]
+    constexpr auto query(__get_completion_behavior_t<_Tag>, _Env const &...) const noexcept
+    {
+      return __get_completion_behavior<_Tag, _Sender, _Env...>();
+    }
+
+    template <__forwarding_query _Query, class... _Args>
+      requires __queryable_with<env_of_t<_Sender>, _Query, _Args...>
+    [[nodiscard]]
+    constexpr auto query(_Query, _Args &&...__args) const
+      noexcept(__nothrow_queryable_with<env_of_t<_Sender>, _Query, _Args...>)
+        -> __query_result_t<env_of_t<_Sender>, _Query, _Args...>
+    {
+      return __query<_Query>()(get_env(__sndr_), static_cast<_Args &&>(__args)...);
+    }
+
+    _Sender const &__sndr_;
+  };
+
+  template <class _Sender>
+  STDEXEC_HOST_DEVICE_DEDUCTION_GUIDE __sync_attrs(_Sender const &) -> __sync_attrs<_Sender>;
+}  // namespace STDEXEC
+
+#include "__epilogue.hpp"
+
+STDEXEC_P2300_NAMESPACE_BEGIN()
+  //////////////////////////////////////////////////////////////////////////////////
+  // [exec.get.allocator]
+  struct get_allocator_t : STDEXEC::__query<get_allocator_t>
+  {
+    using STDEXEC::__query<get_allocator_t>::operator();
+
+    // defined in __read_env.hpp
+    STDEXEC_ATTRIBUTE(nodiscard, always_inline, host, device)
+    constexpr auto operator()() const noexcept;
+
+    template <class _Env>
+    STDEXEC_ATTRIBUTE(always_inline, host, device)
+    static constexpr void __validate() noexcept
+    {
+      static_assert(STDEXEC::__nothrow_callable<get_allocator_t, _Env const &>);
+      using __alloc_t = STDEXEC::__call_result_t<get_allocator_t, _Env const &>;
+      static_assert(STDEXEC::__simple_allocator<STDEXEC::__decay_t<__alloc_t>>);
+    }
+
+    STDEXEC_ATTRIBUTE(nodiscard, always_inline, host, device)
+    static consteval auto query(forwarding_query_t) noexcept -> bool
+    {
+      return true;
+    }
+  };
+
+  inline constexpr get_allocator_t get_allocator{};
+STDEXEC_P2300_NAMESPACE_END()

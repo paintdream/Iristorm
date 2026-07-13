@@ -1,0 +1,61 @@
+/*
+ * Copyright (c) 2021-2024 NVIDIA Corporation
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include "__execution_fwd.hpp"
+
+// include these after __execution_fwd.hpp
+#include "__basic_sender.hpp"
+#include "__completion_signatures_of.hpp"
+#include "__queries.hpp"
+#include "__sender_introspection.hpp"
+
+#include "__prologue.hpp"
+
+namespace STDEXEC
+{
+  /////////////////////////////////////////////////////////////////////////////
+  // [exec.schedule.from]
+  struct schedule_from_t
+  {
+    template <sender _Sender>
+    constexpr auto operator()(_Sender&& __sndr) const
+    {
+      return __make_sexpr<schedule_from_t>({}, static_cast<_Sender&&>(__sndr));
+    }
+  };
+
+  inline constexpr schedule_from_t schedule_from{};
+
+  template <>
+  struct __sexpr_impl<schedule_from_t> : __sexpr_defaults
+  {
+    static constexpr auto __get_attrs =
+      []<class _Child>(schedule_from_t, __ignore, _Child const & __child) noexcept
+    {
+      return __sync_attrs{__child};
+    };
+
+    template <class _Sender, class... _Env>
+    static consteval auto __get_completion_signatures()
+    {
+      static_assert(__sender_for<_Sender, schedule_from_t>);
+      return STDEXEC::get_completion_signatures<__child_of<_Sender>, _Env...>();
+    }
+  };
+}  // namespace STDEXEC
+
+#include "__epilogue.hpp"

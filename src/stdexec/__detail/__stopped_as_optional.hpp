@@ -1,0 +1,269 @@
+/*
+ * Copyright (c) 2021-2024 NVIDIA Corporation
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include "__execution_fwd.hpp"
+
+// include these after __execution_fwd.hpp
+#include "__basic_sender.hpp"
+#include "__completion_signatures.hpp"
+#include "__completion_signatures_of.hpp"
+#include "__concepts.hpp"
+#include "__diagnostics.hpp"
+#include "__receivers.hpp"
+#include "__sender_adaptor_closure.hpp"
+#include "__senders.hpp"
+#include "__transform_completion_signatures.hpp"
+#include "__type_traits.hpp"
+
+#include <exception>
+#include <optional>
+
+#include "__prologue.hpp"
+
+namespace STDEXEC
+{
+  /////////////////////////////////////////////////////////////////////////////
+  // [exec.stopped.opt]
+  namespace __sao
+  {
+    struct _SENDER_MUST_HAVE_EXACTLY_ONE_VALUE_COMPLETION_WITH_ONE_ARGUMENT_;
+
+    template <class _Receiver, class _Value>
+    struct __state
+    {
+      using __receiver_t = _Receiver;
+      using __value_t    = _Value;
+      STDEXEC_IMMOVABLE_NO_UNIQUE_ADDRESS
+      _Receiver __rcvr_;
+    };
+
+    struct __stopped_as_optional_impl : __sexpr_defaults
+    {
+      template <class... _Tys>
+        requires(sizeof...(_Tys) == 1)
+      using __set_value_t = completion_signatures<set_value_t(std::optional<__decay_t<_Tys>>...)>;
+
+      template <class _Ty>
+      using __set_error_t = completion_signatures<set_error_t(_Ty)>;
+
+      template <class _Sender, class _Receiver>
+      using __value_type_t =
+        __decay_t<__single_sender_value_t<__child_of<_Sender>, env_of_t<_Receiver>>>;
+
+      template <class _Self, class... _Env>
+      static constexpr auto __get_completion_signatures()
+      {
+        static_assert(__sender_for<_Self, stopped_as_optional_t>);
+        auto __completions = STDEXEC::get_completion_signatures<__child_of<_Self>, _Env...>();
+
+        STDEXEC_IF_OK(__completions)
+        {
+          using _Completions = decltype(__completions);
+          if constexpr (__single_value_sender<__child_of<_Self>, _Env...>)
+          {
+            return __transform_completion_signatures_t<
+              _Completions,
+              completion_signatures<set_error_t(std::exception_ptr)>,
+              __set_value_t,
+              __set_error_t,
+              completion_signatures<>>();
+          }
+          else
+          {
+            return STDEXEC::__throw_compile_time_error<
+              _WHAT_(_SENDER_MUST_HAVE_EXACTLY_ONE_VALUE_COMPLETION_WITH_ONE_ARGUMENT_),
+              _WHERE_(_IN_ALGORITHM_, stopped_as_optional_t),
+              _WITH_PRETTY_SENDER_<__child_of<_Self>>>();
+          }
+        }
+      };
+
+      static constexpr auto __get_state =
+        []<class _Self, class _Receiver>(_Self&&, _Receiver&& __rcvr) noexcept
+        -> __state<_Receiver, __value_type_t<_Self, _Receiver>>
+        requires sender_in<__child_of<_Self>, env_of_t<_Receiver>>
+      {
+        static_assert(__sender_for<_Self, stopped_as_optional_t>);
+        using __value_t = __value_type_t<_Self, _Receiver>;
+        return __state<_Receiver, __value_t>{static_cast<_Receiver&&>(__rcvr)};
+      };
+
+      static constexpr auto __complete =
+        []<class _State, class _Tag, class... _Args>(__ignore,
+                                                     _State& __state,
+                                                     _Tag,
+                                                     _Args&&... __args) noexcept -> void
+      {
+        using __value_t = _State::__value_t;
+        if constexpr (__same_as<_Tag, set_value_t>)
+        {
+          STDEXEC_TRY
+          {
+            static_assert(__std::constructible_from<__value_t, _Args...>);
+            STDEXEC::set_value(static_cast<_State&&>(__state).__rcvr_,
+                               std::optional<__value_t>{static_cast<_Args&&>(__args)...});
+          }
+          STDEXEC_CATCH_ALL
+          {
+            STDEXEC::set_error(static_cast<_State&&>(__state).__rcvr_, std::current_exception());
+          }
+        }
+        else if constexpr (__same_as<_Tag, set_error_t>)
+        {
+          STDEXEC::set_error(static_cast<_State&&>(__state).__rcvr_,
+                             static_cast<_Args&&>(__args)...);
+        }
+        else
+        {
+          STDEXEC::set_value(static_cast<_State&&>(__state).__rcvr_,
+                             std::optional<__value_t>{std::nullopt});
+        }
+      };
+    };
+  }  // namespace __sao
+
+  //! @brief A pipeable sender adaptor that converts a predecessor's stopped
+  //!        completion into a value-channel @c std::nullopt, wrapping the
+  //!        value-completion datum in a @c std::optional.
+  //!
+  //! @c stopped_as_optional is the value-channel mirror of
+  //! @ref stopped_as_error_t. Where @c stopped_as_error turns cancellation
+  //! into an error, @c stopped_as_optional turns cancellation into a
+  //! "no value" signal *on the value channel*. The resulting sender
+  //! value-completes with a @c std::optional<T>: engaged if the
+  //! predecessor produced a value, disengaged if the predecessor was
+  //! stopped.
+  //!
+  //! Both call syntaxes are supported (the second is the *pipeable* form):
+  //!
+  //! @code{.cpp}
+  //! auto s1 = stdexec::stopped_as_optional(sndr);
+  //! auto s2 = sndr | stdexec::stopped_as_optional();
+  //! @endcode
+  //!
+  //! Use this when downstream code prefers branching on a @c std::optional
+  //! (a familiar idiom) over branching on an empty
+  //! <tt>std::optional<std::tuple<...>></tt> from @c sync_wait or
+  //! handling the @c set_stopped channel via an adaptor.
+  //!
+  //! **Single value-completion requirement.**
+  //!
+  //! @c stopped_as_optional requires the predecessor to have exactly one
+  //! value-completion signature with exactly one argument. (How would we
+  //! wrap multiple values in a *single* @c std::optional?) If the
+  //! predecessor has multiple value completions, or zero/multiple value
+  //! arguments, the program is ill-formed with a focused diagnostic
+  //! ("the sender must have exactly one value completion with one
+  //! argument").
+  //!
+  //! **Completion signatures.**
+  //!
+  //! Given a predecessor sender @c sndr with completion signatures
+  //!
+  //! @code{.cpp}
+  //! set_value_t(T)        // exactly one value-completion with one argument
+  //! set_error_t(Es)...    // zero or more
+  //! set_stopped_t()       // consumed
+  //! @endcode
+  //!
+  //! the sender produced by <tt>stopped_as_optional(sndr)</tt> has
+  //! completion signatures
+  //!
+  //! @code{.cpp}
+  //! set_value_t(std::optional<std::decay_t<T>>)
+  //! set_error_t(Es)...                  // forwarded unchanged
+  //! set_error_t(std::exception_ptr)     // added if wrapping may throw
+  //!                                     // (no set_stopped_t in the output)
+  //! @endcode
+  //!
+  //! The original @c set_stopped_t completion is consumed: the resulting
+  //! sender will never deliver @c set_stopped.
+  //!
+  //! **Exception behavior.**
+  //!
+  //! If constructing the @c std::optional from the predecessor's value
+  //! throws (e.g., the value type's copy constructor throws), the
+  //! exception is delivered through
+  //! @c set_error_t(std::exception_ptr).
+  //!
+  //! **Example.**
+  //!
+  //! @code{.cpp}
+  //! using namespace stdexec;
+  //!
+  //! auto sndr = just(42) | stopped_as_optional();
+  //! auto [opt] = sync_wait(std::move(sndr)).value();
+  //! // opt == std::optional<int>{42}
+  //!
+  //! auto sndr2 = just_stopped() | stopped_as_optional();
+  //! // ...but to make stopped_as_optional well-formed here we need to give
+  //! // the predecessor a value-shape; in practice you compose it on a
+  //! // sender that may either succeed or be stopped:
+  //! auto pipeline =
+  //!   /* some sender that produces an int or is stopped */
+  //!   | stopped_as_optional();
+  //! @endcode
+  //!
+  //! @see stdexec::stopped_as_error    — convert stopped into an error
+  //! @see stdexec::upon_stopped         — handle stopped synchronously
+  //! @see stdexec::let_stopped          — handle stopped with a sender-returning callback
+  //! @see stdexec::sync_wait            — also uses an outer @c std::optional to signal stop
+  struct stopped_as_optional_t
+  {
+    //! @brief Construct a sender that wraps @c __sndr's value completion in
+    //!        a @c std::optional and reroutes @c set_stopped to a disengaged
+    //!        optional on the value channel.
+    //!
+    //! @tparam _Sender A type satisfying @c stdexec::sender whose
+    //!                 completion signatures include exactly one
+    //!                 @c set_value_t(T) signature.
+    //!
+    //! @param __sndr   The predecessor sender. Forwarded into the result.
+    template <sender _Sender>
+    constexpr auto operator()(_Sender&& __sndr) const -> __well_formed_sender auto
+    {
+      return __make_sexpr<stopped_as_optional_t>(__(), static_cast<_Sender&&>(__sndr));
+    }
+
+    //! @brief Construct a sender-adaptor closure for the pipe form.
+    //!
+    //! <tt>sndr | stopped_as_optional()</tt> is equivalent to
+    //! <tt>stopped_as_optional(sndr)</tt>. The empty parentheses are
+    //! required by the pipe-closure convention; there are no captured
+    //! arguments.
+    STDEXEC_ATTRIBUTE(always_inline)
+    auto operator()() const noexcept
+    {
+      return __closure(*this);
+    }
+  };
+
+  //! @brief The customization point object for the @c stopped_as_optional sender adaptor.
+  //!
+  //! @c stopped_as_optional is an instance of @ref stopped_as_optional_t.
+  //! See @ref stopped_as_optional_t for the full description and a usage
+  //! example.
+  //!
+  //! @hideinitializer
+  inline constexpr stopped_as_optional_t stopped_as_optional{};
+
+  template <>
+  struct __sexpr_impl<stopped_as_optional_t> : __sao::__stopped_as_optional_impl
+  {};
+}  // namespace STDEXEC
+
+#include "__epilogue.hpp"

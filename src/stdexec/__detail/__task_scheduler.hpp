@@ -1,0 +1,851 @@
+/*
+ * Copyright (c) 2026 NVIDIA Corporation
+ *
+ * Licensed under the Apache License Version 2.0 with LLVM Exceptions
+ * (the "License"); you may not use this file except in compliance with
+ * the License. You may obtain a copy of the License at
+ *
+ *   https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#pragma once
+
+#include "__execution_fwd.hpp"
+
+// include these after __execution_fwd.hpp
+#include "__any.hpp"
+#include "__bulk.hpp"
+#include "__concepts.hpp"
+#include "__diagnostics.hpp"
+#include "__domain.hpp"
+#include "__env.hpp"
+#include "__inline_scheduler.hpp"
+#include "__just.hpp"
+#include "__memory.hpp"
+#include "__meta.hpp"
+#include "__parallel_scheduler_backend.hpp"
+#include "__schedulers.hpp"
+#include "__scope.hpp"
+#include "__transform_completion_signatures.hpp"
+#include "__typeinfo.hpp"
+#include "__variant.hpp"  // IWYU pragma: keep for __variant
+
+#include <cstddef>
+
+#include <exception>
+#include <span>
+#include <utility>
+
+#ifndef STDEXEC_TASK_SCHEDULE_OPSTATE_SIZE
+#  define STDEXEC_TASK_SCHEDULE_OPSTATE_SIZE 72
+#endif
+#ifndef STDEXEC_TASK_SCHEDULE_OPSTATE_ALIGN
+#  define STDEXEC_TASK_SCHEDULE_OPSTATE_ALIGN 8
+#endif
+#ifndef STDEXEC_TASK_BULK_SCHEDULE_OPSTATE_SIZE
+#  define STDEXEC_TASK_BULK_SCHEDULE_OPSTATE_SIZE 152
+#endif
+#ifndef STDEXEC_TASK_BULK_SCHEDULE_OPSTATE_ALIGN
+#  define STDEXEC_TASK_BULK_SCHEDULE_OPSTATE_ALIGN 8
+#endif
+
+#include "__prologue.hpp"
+
+STDEXEC_PRAGMA_IGNORE_GNU("-Warray-bounds")
+
+namespace STDEXEC
+{
+  class task_scheduler;
+  struct task_scheduler_domain;
+
+  namespace __task
+  {
+    using namespace parallel_scheduler_replacement;
+
+    // The concrete type-erased sender returned by task_scheduler::schedule()
+    struct __sender;
+
+    template <class _Sndr>
+    struct __bulk_sender;
+
+    template <class _BulkTag, class _Policy, class _Fn, class _Rcvr, class _Values>
+    struct __bulk_state;
+
+    template <class _BulkTag, class _Policy, class _Fn, class _Rcvr, class _Values>
+    struct __bulk_receiver;
+
+    template <class _Alloc, class _Sndr, class _Env>
+    class __opstate;
+
+    template <class _Base>
+    struct __itask_scheduler_backend;
+
+    template <class _Base>
+    using __itask_scheduler_base_t =
+      __any::__interface_base<__itask_scheduler_backend,
+                              _Base,
+                              __any::__extends<__iparallel_scheduler_backend,
+                                               __any::__icopyable,
+                                               __any::__iequality_comparable>>;
+
+    template <class _Base>
+    struct __itask_scheduler_backend : __itask_scheduler_base_t<_Base>
+    {
+      using __itask_scheduler_base_t<_Base>::__itask_scheduler_base_t;
+
+      // NOLINTBEGIN(modernize-use-override)
+      [[nodiscard]]
+      virtual constexpr auto query(get_forward_progress_guarantee_t) const noexcept  //
+        -> forward_progress_guarantee
+      {
+        return get_forward_progress_guarantee(__any::__value(*this));
+      }
+      // NOLINTEND(modernize-use-override)
+    };
+
+    struct __any_task_scheduler_backend final
+      : STDEXEC::__any::__any<__task::__itask_scheduler_backend>
+    {
+      using STDEXEC::__any::__any<__task::__itask_scheduler_backend>::__any;
+    };
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    // __env
+    struct __unstoppable_env : __detail::__proxy_env
+    {
+      using __detail::__proxy_env::query;
+
+      [[nodiscard]]
+      constexpr auto query(get_stop_token_t) const noexcept -> never_stop_token
+      {
+        return never_stop_token{};
+      }
+    };
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    // __just_with_scheduler
+    template <class _Sch>
+    struct __just_with_scheduler
+    {
+     private:
+      struct __env
+      {
+        template <class... _Env>
+          requires __callable<get_completion_scheduler_t<set_value_t>, _Sch const &, _Env...>
+        [[nodiscard]]
+        constexpr auto
+        query(get_completion_scheduler_t<set_value_t>, _Env const &... __env) const noexcept
+        {
+          return get_completion_scheduler<set_value_t>(__sch_, static_cast<_Env const &>(__env)...);
+        }
+
+        _Sch const & __sch_;
+      };
+
+     public:
+      using sender_concept = sender_tag;
+
+      template <class _Rcvr>
+      [[nodiscard]]
+      constexpr auto connect(_Rcvr __rcvr) const noexcept
+      {
+        return STDEXEC::connect(just(), static_cast<_Rcvr&&>(__rcvr));
+      }
+
+      template <class>
+      static consteval auto get_completion_signatures() noexcept
+      {
+        return completion_signatures<set_value_t()>{};
+      }
+
+      [[nodiscard]]
+      constexpr auto get_env() const noexcept -> __env
+      {
+        return {__sch_};
+      }
+
+      _Sch const & __sch_;
+    };
+
+    template <class _Sch>
+    STDEXEC_HOST_DEVICE_DEDUCTION_GUIDE __just_with_scheduler(_Sch) -> __just_with_scheduler<_Sch>;
+
+    template <bool _Unstoppable>
+    using __env_t = __if_c<_Unstoppable, __unstoppable_env, __detail::__proxy_env>;
+  }  // namespace __task
+
+  struct _CANNOT_DISPATCH_BULK_ALGORITHM_TO_TASK_SCHEDULER_BECAUSE_THERE_IS_NO_TASK_SCHEDULER_IN_THE_ENVIRONMENT;
+  struct _ADD_A_CONTINUES_ON_TRANSITION_TO_THE_TASK_SCHEDULER_BEFORE_THE_BULK_ALGORITHM;
+
+  struct task_scheduler_domain : default_domain
+  {
+    template <__sender_for _Sndr, class _Env, class _BulkTag = tag_of_t<_Sndr>>
+      requires __one_of<_BulkTag, bulk_chunked_t, bulk_unchunked_t>
+    [[nodiscard]]
+    static constexpr auto transform_sender(set_value_t, _Sndr&& __sndr, _Env const & __env)
+    {
+      using __sched_t = __call_result_or_t<get_completion_scheduler_t<set_value_t>,
+                                           __not_a_scheduler<>,
+                                           env_of_t<_Sndr>,
+                                           _Env const &>;
+
+      if constexpr (!__same_as<__sched_t, task_scheduler>)
+      {
+        return __not_a_sender<
+          _WHERE_(_IN_ALGORITHM_, _BulkTag),
+          _WHAT_(
+            _CANNOT_DISPATCH_BULK_ALGORITHM_TO_TASK_SCHEDULER_BECAUSE_THERE_IS_NO_TASK_SCHEDULER_IN_THE_ENVIRONMENT),
+          _TO_FIX_THIS_ERROR_(
+            _ADD_A_CONTINUES_ON_TRANSITION_TO_THE_TASK_SCHEDULER_BEFORE_THE_BULK_ALGORITHM),
+          _WITH_PRETTY_SENDER_<_Sndr>,
+          _WITH_ENVIRONMENT_(_Env)>{};
+      }
+      else
+      {
+        auto __sch = get_completion_scheduler<set_value_t>(get_env(__sndr), __env);
+        return __task::__bulk_sender<_Sndr>{static_cast<_Sndr&&>(__sndr), std::move(__sch)};
+      }
+    }
+  };
+
+  //! @brief A type-erased scheduler.
+  //!
+  //! The `task_scheduler` struct is implemented in terms of a backend type derived from
+  //! @c parallel_scheduler_backend, providing a type-erased interface for scheduling tasks.
+  //! It exposes query functions to retrieve the completion scheduler and domain.
+  //!
+  //! @see parallel_scheduler_backend
+  class task_scheduler
+  {
+    template <class _Sch, class _Alloc>
+    class __backend_for;
+
+   public:
+    using scheduler_concept = scheduler_tag;
+
+    template <__not_same_as<task_scheduler> _Sch, class _Alloc = std::allocator<_Sch>>
+      requires __infallible_scheduler<_Sch, __task::__env_t<true>>
+    constexpr explicit task_scheduler(_Sch __sch, _Alloc const & __alloc = {})
+      : __backend_(__backend_for{std::move(__sch), STDEXEC::__rebind_allocator<_Sch>(__alloc)},
+                   STDEXEC::__rebind_allocator<__backend_for<_Sch, _Alloc>>(__alloc))
+    {
+      using __opstate_t = __task::__opstate<_Alloc, schedule_result_t<_Sch>, __task::__env_t<true>>;
+      static_assert(sizeof(__opstate_t) <= STDEXEC_TASK_SCHEDULE_OPSTATE_SIZE,
+                    "The operation state for scheduling a task on the provided scheduler is too "
+                    "large to fit in the preallocated storage of task_scheduler. Either reduce the "
+                    "size of the operation state by using a different scheduler or increasing the "
+                    "STDEXEC_TASK_SCHEDULE_OPSTATE_SIZE macro.");
+      static_assert(alignof(__opstate_t) <= STDEXEC_TASK_SCHEDULE_OPSTATE_ALIGN,
+                    "The operation state for scheduling a task on the provided scheduler has an "
+                    "alignment requirement that exceeds the preallocated storage alignment of "
+                    "task_scheduler. Either reduce the alignment requirement of the operation "
+                    "state by using a different scheduler or increasing the "
+                    "STDEXEC_TASK_SCHEDULE_OPSTATE_ALIGN macro.");
+    }
+
+    [[nodiscard]]
+    constexpr auto schedule() const noexcept -> __task::__sender;
+
+    [[nodiscard]]
+    bool operator==(task_scheduler const & __rhs) const noexcept = default;
+
+    [[nodiscard]]
+    constexpr auto query(get_forward_progress_guarantee_t) const noexcept  //
+      -> forward_progress_guarantee
+    {
+      return __backend_.query(get_forward_progress_guarantee);
+    }
+
+    [[nodiscard]]
+    constexpr auto query(get_completion_scheduler_t<set_value_t>) const noexcept  //
+      -> task_scheduler const &
+    {
+      return *this;
+    }
+
+    [[nodiscard]]
+    constexpr auto query(get_completion_domain_t<set_value_t>) const noexcept
+    {
+      return task_scheduler_domain{};
+    }
+
+   private:
+    template <class>
+    friend struct __task::__bulk_sender;
+    friend struct __task::__sender;
+
+    __task::__any_task_scheduler_backend __backend_;
+  };
+
+  namespace __task
+  {
+    //! @brief A type-erased opstate returned when connecting the result of
+    //! task_scheduler::schedule() to a receiver.
+    template <class _Rcvr>
+    class __any_opstate
+    {
+     public:
+      using operation_state_concept = operation_state_tag;
+
+      constexpr explicit __any_opstate(__any_task_scheduler_backend __backend,
+                                       _Rcvr                        __rcvr) noexcept
+        : __rcvr_proxy_(std::move(__rcvr))
+        , __backend_(std::move(__backend))
+      {}
+
+      constexpr void start() noexcept
+      {
+        __backend_.schedule(__rcvr_proxy_, std::span{__storage_});
+      }
+
+     private:
+      __detail::__receiver_proxy<_Rcvr, true> __rcvr_proxy_;
+      __any_task_scheduler_backend            __backend_;
+      alignas(STDEXEC_TASK_SCHEDULE_OPSTATE_ALIGN) std::byte
+        __storage_[STDEXEC_TASK_SCHEDULE_OPSTATE_SIZE];
+    };
+
+    //! @brief A type-erased sender returned by task_scheduler::schedule().
+    struct __sender
+    {
+      using sender_concept = sender_tag;
+
+      constexpr explicit __sender(task_scheduler __sch) noexcept
+        : __attrs_{std::move(__sch)}
+      {}
+
+      template <class _Rcvr>
+      [[nodiscard]]
+      constexpr auto connect(_Rcvr __rcvr) const noexcept -> __any_opstate<_Rcvr>
+      {
+        return __any_opstate<_Rcvr>(get_completion_scheduler<set_value_t>(__attrs_).__backend_,
+                                    std::move(__rcvr));
+      }
+
+      template <class _Self, class _Env>
+      [[nodiscard]]
+      static consteval auto get_completion_signatures() noexcept
+      {
+        if constexpr (unstoppable_token<stop_token_of_t<_Env>>)
+        {
+          return completion_signatures<set_value_t()>{};
+        }
+        else
+        {
+          return completion_signatures<set_value_t(), set_stopped_t()>{};
+        }
+      }
+
+      [[nodiscard]]
+      constexpr auto get_env() const noexcept -> __sched_attrs<task_scheduler> const &
+      {
+        return __attrs_;
+      }
+
+     private:
+      __sched_attrs<task_scheduler> __attrs_;
+    };
+
+    //! @brief A receiver used to connect the predecessor of a bulk operation launched by a
+    //! task_scheduler. Its set_value member stores the predecessor's values in the bulk
+    //! operation state and then starts the bulk operation.
+    template <class _BulkTag, class _Policy, class _Fn, class _Rcvr, class _Values>
+    struct __bulk_receiver
+    {
+      using receiver_concept = receiver_tag;
+
+      template <class... _As>
+      constexpr void set_value(_As&&... __as) noexcept
+      {
+        STDEXEC_TRY
+        {
+          // Store the predecessor's values in the bulk operation state.
+          using __values_t = __decayed_tuple<_As...>;
+          __state_->__values_.template emplace<__values_t>(static_cast<_As&&>(__as)...);
+
+          // Start the bulk operation.
+          if constexpr (__same_as<_BulkTag, bulk_chunked_t>)
+          {
+            __state_->__backend_.schedule_bulk_chunked(__state_->__shape_,
+                                                       *__state_,
+                                                       std::span{__state_->__storage_});
+          }
+          else
+          {
+            __state_->__backend_.schedule_bulk_unchunked(__state_->__shape_,
+                                                         *__state_,
+                                                         std::span{__state_->__storage_});
+          }
+        }
+        STDEXEC_CATCH_ALL
+        {
+          STDEXEC::set_error(std::move(__state_->__rcvr_), std::current_exception());
+        }
+      }
+
+      template <class _Error>
+      constexpr void set_error(_Error&& __err) noexcept
+      {
+        STDEXEC::set_error(std::move(__state_->__rcvr_), static_cast<_Error&&>(__err));
+      }
+
+      constexpr void set_stopped() noexcept
+      {
+        STDEXEC::set_stopped(std::move(__state_->__rcvr_));
+      }
+
+      [[nodiscard]]
+      constexpr auto get_env() const noexcept -> env_of_t<_Rcvr>
+      {
+        return STDEXEC::get_env(__state_->__rcvr_);
+      }
+
+      __bulk_state<_BulkTag, _Policy, _Fn, _Rcvr, _Values>* __state_;
+    };
+
+    //! Returns a visitor (callable) used to invoke the bulk (unchunked) function with the
+    //! predecessor's values, which are stored in a variant in the bulk operation state.
+    template <bool _Parallelize, class _Fn>
+    [[nodiscard]]
+    constexpr auto __get_execute_bulk_fn(bulk_unchunked_t,
+                                         _Fn&   __fn,
+                                         size_t __shape,
+                                         size_t __begin,
+                                         size_t) noexcept
+    {
+      return [=, &__fn](auto& __args)
+      {
+        // If we are not parallelizing, we need to run all the iterations sequentially.
+        size_t const __increments = _Parallelize ? 1 : __shape;
+        // Precompose the function with the arguments so we don't have to do it every iteration.
+        auto __precomposed_fn = __apply(
+          [&](auto&... __as)
+          {
+            return [&](size_t __i) -> void
+            {
+              __fn(__i, __as...);
+            };
+          },
+          __args);
+        for (size_t __i = __begin; __i < __begin + __increments; ++__i)
+        {
+          __precomposed_fn(__i);
+        }
+      };
+    }
+
+    template <bool _Parallelize, class _Fn>
+    struct __apply_bulk_execute
+    {
+      template <class... _As>
+      constexpr void operator()(_As&... __as) const  //
+        noexcept(__nothrow_callable<_Fn&, size_t, size_t, _As&...>)
+      {
+        if constexpr (_Parallelize)
+        {
+          __fn_(__begin_, __end_, __as...);
+        }
+        else
+        {
+          // If we are not parallelizing, we need to pass the entire range to the functor.
+          __fn_(size_t(0), __shape_, __as...);
+        }
+      }
+
+      size_t __begin_, __end_, __shape_;
+      _Fn&   __fn_;
+    };
+
+    //! Returns a visitor (callable) used to invoke the bulk (chunked) function with the
+    //! predecessor's values, which are stored in a variant in the bulk operation state.
+    template <bool _Parallelize, class _Fn>
+    [[nodiscard]]
+    constexpr auto __get_execute_bulk_fn(bulk_chunked_t,
+                                         _Fn&   __fn,
+                                         size_t __shape,
+                                         size_t __begin,
+                                         size_t __end) noexcept
+    {
+      return [=, &__fn](auto& __args)
+      {
+        __apply(__apply_bulk_execute<_Parallelize, _Fn>{__begin, __end, __shape, __fn}, __args);
+      };
+    }
+
+    //! Stores the state for a bulk operation launched by a task_scheduler. A type-erased
+    //! reference to this object is passed to either the task_scheduler's
+    //! schedule_bulk_chunked or schedule_bulk_unchunked methods, which is expected to call
+    //! execute(begin, end) on it to run the bulk operation. After the bulk operation is
+    //! complete, set_value is called, which forwards the predecessor's values to the
+    //! downstream receiver.
+    template <class _BulkTag, class _Policy, class _Fn, class _Rcvr, class _Values>
+    struct __bulk_state final
+      : __detail::__receiver_proxy_base<_Rcvr, bulk_item_receiver_proxy, true>
+    {
+      constexpr explicit __bulk_state(_Rcvr                        __rcvr,
+                                      size_t                       __shape,
+                                      _Fn                          __fn,
+                                      __any_task_scheduler_backend __backend)
+        : __bulk_state::__receiver_proxy_base(std::move(__rcvr))
+        , __fn_(std::move(__fn))
+        , __shape_(__shape)
+        , __backend_(std::move(__backend))
+      {}
+
+      constexpr void set_value() noexcept final
+      {
+        // Send the stored values to the downstream receiver.
+        __visit([](auto& __rcvr, auto& __tupl)
+                { __apply(STDEXEC::set_value, std::move(__tupl), std::move(__rcvr)); },
+                __values_,
+                this->__rcvr_);
+      }
+
+      //! Actually runs the bulk operation over the specified range.
+      constexpr void execute(size_t __begin, size_t __end) noexcept final
+      {
+        STDEXEC_TRY
+        {
+          using __policy_t = std::remove_cvref_t<decltype(__declval<_Policy>().__get())>;
+          constexpr bool __parallelize =
+            __same_as<__policy_t, STDEXEC::parallel_policy>
+            || __same_as<__policy_t, STDEXEC::parallel_unsequenced_policy>;
+          __visit(__task::__get_execute_bulk_fn<__parallelize>(_BulkTag(),
+                                                               __fn_,
+                                                               __shape_,
+                                                               __begin,
+                                                               __end),
+                  __values_);
+        }
+        STDEXEC_CATCH_ALL
+        {
+          STDEXEC::set_error(std::move(this->__rcvr_), std::current_exception());
+        }
+      }
+
+     private:
+      template <class, class, class, class, class>
+      friend struct __bulk_receiver;
+
+      _Fn                          __fn_;
+      size_t                       __shape_;
+      _Values                      __values_{__no_init};
+      __any_task_scheduler_backend __backend_;
+      alignas(STDEXEC_TASK_BULK_SCHEDULE_OPSTATE_ALIGN) std::byte
+        __storage_[STDEXEC_TASK_BULK_SCHEDULE_OPSTATE_SIZE];
+    };
+
+    ////////////////////////////////////////////////////////////////////////////////////
+    // Operation state for task scheduler bulk operations
+    template <class _BulkTag, class _Policy, class _Sndr, class _Fn, class _Rcvr>
+    struct __bulk_opstate
+    {
+      using operation_state_concept = operation_state_tag;
+
+      constexpr explicit __bulk_opstate(_Sndr&&                      __sndr,
+                                        size_t                       __shape,
+                                        _Fn                          __fn,
+                                        _Rcvr                        __rcvr,
+                                        __any_task_scheduler_backend __backend)
+        : __state_{std::move(__rcvr), __shape, std::move(__fn), std::move(__backend)}
+        , __opstate1_(STDEXEC::connect(static_cast<_Sndr&&>(__sndr), __rcvr_t{&__state_}))
+      {}
+
+      constexpr void start() noexcept
+      {
+        STDEXEC::start(__opstate1_);
+      }
+
+     private:
+      using __values_t =
+        value_types_of_t<_Sndr, __fwd_env_t<env_of_t<_Rcvr>>, __decayed_tuple, __uniqued_variant>;
+      using __rcvr_t     = __bulk_receiver<_BulkTag, _Policy, _Fn, _Rcvr, __values_t>;
+      using __opstate1_t = connect_result_t<_Sndr, __rcvr_t>;
+
+      __bulk_state<_BulkTag, _Policy, _Fn, _Rcvr, __values_t> __state_;
+      __opstate1_t                                            __opstate1_;
+    };
+
+    template <class _Sndr>
+    struct __bulk_sender
+    {
+      using sender_concept = sender_tag;
+
+      constexpr explicit __bulk_sender(_Sndr __sndr, task_scheduler __sch)
+        : __sndr_(std::move(__sndr))
+        , __attrs_{std::move(__sch)}
+      {}
+
+      template <class _Rcvr>
+      constexpr auto connect(_Rcvr __rcvr) &&
+      {
+        auto& [__tag, __data, __child] = __sndr_;
+        auto& [__pol, __shape, __fn]   = __data;
+        return __bulk_opstate<decltype(__tag),
+                              decltype(__pol),
+                              decltype(__child),
+                              decltype(__fn),
+                              _Rcvr>{std::move(__child),
+                                     static_cast<size_t>(__shape),
+                                     std::move(__fn),
+                                     std::move(__rcvr),
+                                     std::move(__attrs_.__sched_.__backend_)};
+      }
+
+      template <__same_as<__bulk_sender> _Self, class _Env>  // accept only rvalues
+      [[nodiscard]]
+      static consteval auto get_completion_signatures()
+      {
+        auto __completions = STDEXEC::get_completion_signatures<__child_of<_Sndr>, _Env>();
+        return STDEXEC::__transform_completion_signatures(__completions,
+                                                          __decay_arguments<set_value_t>(),
+                                                          {},
+                                                          {},
+                                                          __eptr_completion_t());
+      }
+
+      [[nodiscard]]
+      constexpr auto get_env() const noexcept -> __sched_attrs<task_scheduler> const &
+      {
+        return __attrs_;
+      }
+
+     private:
+      _Sndr                         __sndr_;
+      __sched_attrs<task_scheduler> __attrs_;
+    };
+
+    //! Function called by the `bulk_chunked` operation; calls `execute` on the bulk_item_receiver_proxy.
+    struct __bulk_chunked_fn
+    {
+      constexpr void operator()(size_t __begin, size_t __end) noexcept
+      {
+        __rcvr_.execute(__begin, __end);
+      }
+
+      bulk_item_receiver_proxy& __rcvr_;
+    };
+
+    //! Function called by the `bulk_unchunked` operation; calls `execute` on the bulk_item_receiver_proxy.
+    struct __bulk_unchunked_fn
+    {
+      constexpr void operator()(size_t __idx) noexcept
+      {
+        __rcvr_.execute(__idx, __idx + 1);
+      }
+
+      bulk_item_receiver_proxy& __rcvr_;
+    };
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    // __emplace_into
+    template <class _Ty, class _Alloc, class... _Args>
+    constexpr auto
+    __emplace_into(std::span<std::byte> __storage, _Alloc const & __alloc, _Args&&... __args)
+      -> _Ty&
+    {
+      auto __alloc_copy = STDEXEC::__rebind_allocator<_Ty>(__alloc);
+      using __traits_t  = std::allocator_traits<decltype(__alloc_copy)>;
+
+      bool const    __in_situ = __storage.size() >= sizeof(_Ty);
+      auto*         __ptr     = __in_situ ? reinterpret_cast<_Ty*>(__storage.data())
+                                          : __traits_t::allocate(__alloc_copy, 1);
+      __scope_guard __guard{
+        [&]() noexcept { __in_situ ? void() : __traits_t::deallocate(__alloc_copy, __ptr, 1); }};
+      __traits_t::construct(__alloc_copy, __ptr, static_cast<_Args&&>(__args)...);
+      __guard.__dismiss();
+      return *std::launder(__ptr);
+    }
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    // __opstate
+    template <class _Alloc, class _Sndr, class _Env>
+    class __opstate : _Alloc
+    {
+     public:
+      using __rcvr_proxy_t = receiver_proxy;
+      using __receiver_t   = __detail::__proxy_receiver<__rcvr_proxy_t, _Env>;
+
+      constexpr explicit __opstate(_Alloc          __alloc,
+                                   _Sndr           __sndr,
+                                   __rcvr_proxy_t& __rcvr,
+                                   bool            __in_situ)
+        : _Alloc(std::move(__alloc))
+        , __opstate_(STDEXEC::connect(std::move(__sndr),
+                                      __receiver_t{__rcvr, this, __destroy_pfn_[__in_situ]}))
+      {}
+
+      __opstate(__opstate&&) = delete;
+
+      constexpr void start() noexcept
+      {
+        STDEXEC::start(__opstate_);
+      }
+
+      [[nodiscard]]
+      constexpr auto query(get_allocator_t) const noexcept -> _Alloc const &
+      {
+        return *this;
+      }
+
+     private:
+      template <bool _InSitu>
+      static constexpr void __delete_(void* __ptr) noexcept
+      {
+        using __traits_t    = std::allocator_traits<_Alloc>::template rebind_traits<__opstate>;
+        auto* __opstate_ptr = static_cast<__opstate*>(__ptr);
+        auto  __alloc_copy  = STDEXEC::__rebind_allocator<__opstate>(get_allocator(*__opstate_ptr));
+
+        __traits_t::destroy(__alloc_copy, __opstate_ptr);
+        if constexpr (!_InSitu)
+        {
+          __traits_t::deallocate(__alloc_copy, __opstate_ptr, 1);
+        }
+      }
+
+      using __destroy_fn_t = void(void*) noexcept;
+      static constexpr __destroy_fn_t* __destroy_pfn_[2]{__delete_<false>, __delete_<true>};
+
+      using __proxy_rcvr_t    = __detail::__proxy_receiver<__rcvr_proxy_t, _Env>;
+      using __child_opstate_t = connect_result_t<_Sndr, __proxy_rcvr_t>;
+      __child_opstate_t __opstate_;
+    };
+  }  // namespace __task
+
+  [[nodiscard]]
+  constexpr auto task_scheduler::schedule() const noexcept -> __task::__sender
+  {
+    return __task::__sender{*this};
+  }
+
+  template <class _Sch, class _Alloc>
+  class task_scheduler::__backend_for : _Alloc
+  {
+    template <class _RcvrProxy, class _Env>
+    friend struct __detail::__proxy_receiver;
+
+    template <class _Env, bool _Infallible = false, class _RcvrProxy, class _Sndr>
+    constexpr void
+    __schedule(_RcvrProxy& __rcvr_proxy, _Sndr&& __sndr, std::span<std::byte> __storage) noexcept
+    {
+      STDEXEC_TRY
+      {
+        using __opstate_t        = __task::__opstate<_Alloc, _Sndr, _Env>;
+        bool const     __in_situ = __storage.size() >= sizeof(__opstate_t);
+        _Alloc const & __alloc   = *this;
+        auto&          __opstate = __task::__emplace_into<__opstate_t>(__storage,
+                                                              __alloc,
+                                                              __alloc,
+                                                              static_cast<_Sndr&&>(__sndr),
+                                                              __rcvr_proxy,
+                                                              __in_situ);
+        STDEXEC::start(__opstate);
+      }
+      STDEXEC_CATCH_ALL
+      {
+        if constexpr (_Infallible)
+        {
+          __std::unreachable();
+        }
+        else
+        {
+          __rcvr_proxy.set_error(std::current_exception());
+        }
+      }
+    }
+
+   public:
+    constexpr explicit __backend_for(_Sch __sch, _Alloc __alloc) noexcept
+      : _Alloc(std::move(__alloc))
+      , __sch_(std::move(__sch))
+    {}
+
+    constexpr void schedule(parallel_scheduler_replacement::receiver_proxy& __rcvr_proxy,
+                            std::span<std::byte>                            __storage) noexcept
+    {
+      // Check whether the receiver's stop token is unstoppable. If so, we can connect the
+      // schedule sender with a receiver that doesn't propagate stop requests, which may
+      // prevent stopped signals from being sent.
+      auto const __token = __rcvr_proxy.template try_query<inplace_stop_token>(get_stop_token);
+      bool const __unstoppable = (!__token.has_value() || !(*__token).stop_possible());
+      if (__unstoppable)
+      {
+        __schedule<__task::__env_t<true>, true>(__rcvr_proxy, STDEXEC::schedule(__sch_), __storage);
+      }
+      else
+      {
+        __schedule<__task::__env_t<false>, true>(__rcvr_proxy,
+                                                 STDEXEC::schedule(__sch_),
+                                                 __storage);
+      }
+    }
+
+    constexpr void
+    schedule_bulk_chunked(size_t                                                    __count,
+                          parallel_scheduler_replacement::bulk_item_receiver_proxy& __rcvr_proxy,
+                          std::span<std::byte> __storage) noexcept
+    {
+      auto __sndr = STDEXEC::bulk_chunked(__task::__just_with_scheduler{__sch_},
+                                          par,
+                                          __count,
+                                          __task::__bulk_chunked_fn{__rcvr_proxy});
+      __schedule<__task::__env_t<true>>(__rcvr_proxy, std::move(__sndr), __storage);
+    }
+
+    constexpr void
+    schedule_bulk_unchunked(size_t                                                    __count,
+                            parallel_scheduler_replacement::bulk_item_receiver_proxy& __rcvr_proxy,
+                            std::span<std::byte> __storage) noexcept
+    {
+      auto __sndr = STDEXEC::bulk_unchunked(__task::__just_with_scheduler{__sch_},
+                                            par,
+                                            __count,
+                                            __task::__bulk_unchunked_fn{__rcvr_proxy});
+      __schedule<__task::__env_t<true>>(__rcvr_proxy, std::move(__sndr), __storage);
+    }
+
+    [[nodiscard]]
+    constexpr auto query(get_forward_progress_guarantee_t) const noexcept  //
+      -> forward_progress_guarantee
+    {
+      return get_forward_progress_guarantee(__sch_);
+    }
+
+    friend bool operator==(__backend_for const &, __backend_for const &) noexcept = default;
+
+   private:
+    _Sch __sch_;
+  };
+
+  namespace __detail
+  {
+    // Implementation of the get_start_scheduler_t query for __receiver_proxy_base and
+    // __proxy_env from __parallel_scheduler_backend.hpp.
+    template <class _Rcvr, class _Proxy, bool _Infallible>
+    constexpr void
+    __receiver_proxy_base<_Rcvr, _Proxy, _Infallible>::__query(get_start_scheduler_t,
+                                                               __type_index __value_type,
+                                                               void*        __dest) const noexcept
+    {
+      if (__value_type == __mtypeid<task_scheduler>)
+      {
+        auto& __val = *static_cast<std::optional<task_scheduler>*>(__dest);
+        if constexpr (__callable<get_start_scheduler_t, env_of_t<_Rcvr>>)
+        {
+          __val.emplace(get_start_scheduler(get_env(__rcvr_)));
+        }
+        else
+        {
+          __val.emplace(inline_scheduler{});
+        }
+      }
+    }
+  }  // namespace __detail
+}  // namespace STDEXEC
+
+#include "__epilogue.hpp"
