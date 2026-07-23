@@ -589,6 +589,104 @@ struct iris_warp_parallel_scheduler_t {
 	}
 };
 
+// ===================================================================
+// iris_worker_scheduler_t  --  schedule directly on async_worker_t
+//                               (no warp context)
+// ===================================================================
+//
+// Unlike iris_warp_scheduler_t which dispatches through a warp
+// (preserving warp context, suspend/resume, strand ordering, etc.),
+// this scheduler posts work directly to the underlying worker thread
+// pool. Callbacks execute on any available worker thread and have
+// NO warp context — iris_warp_t::get_current() returns nullptr
+// inside them.
+//
+// Usage:
+//   worker_t<strand> worker(4);
+//   worker.start();
+//   auto sched = iris_worker_scheduler_t<worker_t<strand>>{ worker };
+//   auto result = ex::sync_wait(ex::schedule(sched) | ex::then([]{ ... }));
+//   worker.terminate();
+//   worker.join();
+
+template <typename worker_t>
+struct iris_worker_scheduler_t {
+	using scheduler_concept = STDEXEC::scheduler_tag;
+
+	worker_t* worker = nullptr;
+
+	iris_worker_scheduler_t() = default;
+	/* implicit */ iris_worker_scheduler_t(worker_t& w) noexcept : worker(&w) {}
+
+	struct sender {
+		using sender_concept = STDEXEC::sender_tag;
+		using completion_signatures =
+			STDEXEC::completion_signatures<STDEXEC::set_value_t(), STDEXEC::set_stopped_t()>;
+
+		template <STDEXEC::receiver receiver_t>
+		struct operation_state {
+			using operation_state_concept = STDEXEC::operation_state_tag;
+
+			void start() & noexcept {
+				worker->queue([this]() noexcept {
+					auto stop_token = STDEXEC::get_stop_token(STDEXEC::get_env(receiver));
+					if constexpr (STDEXEC::unstoppable_token<decltype(stop_token)>) {
+						STDEXEC::set_value(std::move(receiver));
+					} else if (stop_token.stop_requested()) {
+						STDEXEC::set_stopped(std::move(receiver));
+					} else {
+						STDEXEC::set_value(std::move(receiver));
+					}
+				});
+			}
+
+			worker_t* worker;
+			receiver_t receiver;
+		};
+
+		struct attrs {
+			template <typename cpo_t>
+			iris_worker_scheduler_t query(STDEXEC::get_completion_scheduler_t<cpo_t>) const noexcept {
+				return iris_worker_scheduler_t{ *worker };
+			}
+
+			worker_t* worker = nullptr;
+		};
+
+		template <STDEXEC::receiver receiver_t>
+		auto connect(receiver_t receiver) const -> operation_state<receiver_t> {
+			return operation_state<receiver_t>{ worker, std::move(receiver) };
+		}
+
+		auto get_env() const noexcept -> attrs {
+			return attrs{ worker };
+		}
+
+		worker_t* worker = nullptr;
+
+		sender() = default;
+		/* implicit */ sender(worker_t& w) noexcept : worker(&w) {}
+	};
+
+	auto schedule() const noexcept -> sender {
+		return sender{ *worker };
+	}
+
+	template <typename cpo_t>
+	auto query(STDEXEC::get_completion_scheduler_t<cpo_t>) const noexcept -> iris_worker_scheduler_t {
+		return *this;
+	}
+
+	auto query(STDEXEC::get_forward_progress_guarantee_t) const noexcept
+		-> STDEXEC::forward_progress_guarantee {
+		return STDEXEC::forward_progress_guarantee::parallel;
+	}
+
+	bool operator == (const iris_worker_scheduler_t& rhs) const noexcept {
+		return worker == rhs.worker;
+	}
+};
+
 #endif
 
 } // namespace iris

@@ -57,6 +57,10 @@ template <bool strand>
 static void test_continues_on();
 template <bool strand>
 static void test_parallel_schedule();
+template <bool strand>
+static void test_worker_schedule_then();
+template <bool strand>
+static void test_worker_starts_on();
 
 template <bool strand>
 static void run_tests() {
@@ -64,6 +68,8 @@ static void run_tests() {
 	test_starts_on_values<strand>();
 	test_continues_on<strand>();
 	test_parallel_schedule<strand>();
+	test_worker_schedule_then<strand>();
+	test_worker_starts_on<strand>();
 }
 
 int main(void) {
@@ -185,6 +191,66 @@ static void test_parallel_schedule() {
 	auto [value] = std::move(result).value();
 	IRIS_ASSERT(value == 51);
 	std::printf("  [parallel] value=%d\n", value);
+
+	worker.terminate();
+	worker.join();
+}
+
+// ===================================================================
+// Worker scheduler tests  --  schedule directly on worker_t
+//                               (NO warp context)
+// ===================================================================
+// The iris_worker_scheduler_t posts work directly to the underlying
+// async_worker thread pool without going through a warp. Callbacks
+// execute on any available worker thread and do NOT have a warp
+// context (iris_warp_t::get_current() returns nullptr).
+
+template <bool strand>
+static void test_worker_schedule_then() {
+	IRIS_PROFILE_SCOPE(__FUNCTION__);
+
+	worker_t<strand> worker(4);
+	worker.start();
+
+	auto sender = ex::schedule(iris_worker_scheduler_t<worker_t<strand>>{ worker })
+		| ex::then([]() noexcept {
+			// NOT in any warp context — get_current() would return nullptr
+			return 21;
+		})
+		| ex::then([](int value) noexcept {
+			return value * 2;
+		});
+
+	auto result = ex::sync_wait(std::move(sender));
+	IRIS_ASSERT(result.has_value());
+	auto [value] = std::move(result).value();
+	IRIS_ASSERT(value == 42);
+	std::printf("  [worker-schedule] value=%d\n", value);
+
+	worker.terminate();
+	worker.join();
+}
+
+template <bool strand>
+static void test_worker_starts_on() {
+	IRIS_PROFILE_SCOPE(__FUNCTION__);
+
+	worker_t<strand> worker(4);
+	worker.start();
+
+	auto sender = ex::starts_on(
+		iris_worker_scheduler_t<worker_t<strand>>{ worker },
+		ex::just(std::string("worker"), 7))
+		| ex::then([](std::string prefix, int suffix) noexcept {
+			// NOT in any warp context
+			return prefix + "-direct-" + std::to_string(suffix);
+		});
+
+	auto result = ex::sync_wait(std::move(sender));
+	IRIS_ASSERT(result.has_value());
+	auto [text] = std::move(result).value();
+	IRIS_ASSERT(text == "worker-direct-7");
+	std::printf("  [worker-starts_on] text=%s\n", text.c_str());
 
 	worker.terminate();
 	worker.join();
