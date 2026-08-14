@@ -21,15 +21,18 @@ namespace iris {
 		lua.set_current("run", lua.load("local self = ...\n\
 print('[tutorial_engine] ')\n\
 print('\\tstart: ' .. tostring(self:start(4)))\n\
--- drive 8 frames: each tick() releases the frame gate; the pipeline\n\
--- coroutine runs one frame (audio -> script -> render) on the workers\n\
+-- drive 8 frames: each tick() opens the frame gate (complete callback);\n\
+-- the pipeline coroutine runs one frame (audio -> script -> render). Note\n\
+-- that tick() does NOT wait for the frame to finish (same as the test);\n\
+-- the last frame completes asynchronously after tick 8 returns.\n\
 for i = 1, 8 do\n\
 	self:tick()\n\
-	self:sleep(5)\n\
 end\n\
+-- terminate() stops the pipeline (set_value(false) + final dispatch) and\n\
+-- waits for the coroutine to exit, so all 8 frames are complete afterwards\n\
+self:terminate()\n\
 print('\\tframes = ' .. tostring(self:get_frame_count()) .. ' (expected 8)')\n\
 print('\\tpipe sum = ' .. tostring(self:get_pipe_sum()) .. ' (expected 21 = 0+1+...+6)')\n\
-self:terminate()\n\
 print('\\tterminated, running = ' .. tostring(self:is_running()))\n\
 print('[tutorial_engine] complete!')\n"));
 	}
@@ -56,7 +59,7 @@ print('[tutorial_engine] complete!')\n"));
 		async_worker->start();
 
 		// launch the pipeline coroutine: it runs to its first suspension
-		// point (co_await frame) and waits for tick() to release the gate
+		// point (co_await frame) and waits for tick() to open the gate
 		frame_pipeline().run();
 		started = true;
 		return true;
@@ -69,36 +72,54 @@ print('[tutorial_engine] complete!')\n"));
 
 		// dispatch() is a FULL participant of the frame barrier: coroutine +
 		// dispatch = 2 arrivals -> the gate opens for exactly one frame.
-		// Unlike release(), dispatch() does not shrink max_await_count, so
-		// the same gate can be reused every frame.
-		frame.dispatch([](auto&) {});
-
-		// wait until the pipeline coroutine finishes this frame (frame count
-		// advances). A timeout guard turns a stuck frame into a report
-		// instead of a hang.
-		int before = frame_count.load(std::memory_order_relaxed);
-		int guard = 0;
-		while (frame_count.load(std::memory_order_relaxed) <= before) {
-			std::this_thread::sleep_for(std::chrono::microseconds(100));
-			if (++guard > 50000) {
-				printf("[engine] tick timeout waiting for frame %d\n", before + 1);
-				break;
-			}
+		// The complete callback fires when the gate opens; tick() waits for
+		// the CALLBACK, not for the frame to finish (same as the test's
+		// cv.wait on the dispatch callback). dispatch is called WITHOUT the
+		// mutex: the callback takes the mutex itself, so there is no lock
+		// ordering issue whether the callback runs on this thread or on a
+		// worker.
+		{
+			std::lock_guard<std::mutex> lock(frame_mutex);
+			frame_opened = false;
 		}
+
+		frame.dispatch([this](auto&) {
+			std::lock_guard<std::mutex> lock(frame_mutex);
+			frame_opened = true;
+			frame_cv.notify_one();
+		});
+
+		std::unique_lock<std::mutex> guard(frame_mutex);
+		frame_cv.wait(guard, [this] { return frame_opened; });
 	}
 
 	void tutorial_engine_t::sleep(size_t milliseconds) const noexcept {
 		std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
 	}
 
+	void tutorial_engine_t::stop() {
+		// let the resident coroutine exit: clear the gate value and open the
+		// gate once more; the coroutine observes value == false, leaves the
+		// loop and signals pipeline_done
+		frame.set_value(false);
+		frame.dispatch([](auto&) {});
+	}
+
 	void tutorial_engine_t::terminate() noexcept {
 		if (started) {
 			started = false;
+
+			// stop the pipeline and wait for it to finish its current frame
+			// and exit, then tear down the worker pool (deterministic teardown)
+			stop();
+			while (!pipeline_done.load(std::memory_order_relaxed)) {
+				std::this_thread::sleep_for(std::chrono::microseconds(100));
+			}
+
 			async_worker->terminate();
 			async_worker->join();
 
-			// drain any remaining warp tasks (the pipeline coroutine has
-			// already finished all total_frames frames at this point)
+			// drain any remaining warp tasks
 			while (warp_t::poll({ std::ref(audio_warp), std::ref(script_warp), std::ref(render_warp) })) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
@@ -131,12 +152,9 @@ print('[tutorial_engine] complete!')\n"));
 			// produce this frame's value for the next frame
 			pipe.emplace(frame_index);
 			frame_index++;
-			// publish frame completion; tick() is waiting for the count
 			frame_count.store(frame_index, std::memory_order_relaxed);
-
-			if (frame_index >= static_cast<int>(total_frames)) {
-				break;
-			}
 		}
+
+		pipeline_done.store(true, std::memory_order_relaxed);
 	}
 }
