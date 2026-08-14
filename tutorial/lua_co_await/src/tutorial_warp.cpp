@@ -4,7 +4,7 @@ namespace iris {
 	void tutorial_warp_t::lua_registar(iris_lua_t&& lua, std::nullptr_t) {
 		lua.set_current<&tutorial_warp_t::pipeline>("pipeline");
 		lua.set_current<&tutorial_warp_t::warp_variable>("warp_variable");
-		lua.set_current<&tutorial_warp_t::free_variable>("free_variable");
+		lua.set_current<&tutorial_warp_t::get_free_variable>("get_free_variable");
 		lua.set_current("run", lua.load("local self = ...\n\
 print('[tutorial_warp] begin pipeline')\n\
 local running = coroutine.running() \n\
@@ -27,12 +27,16 @@ if complete_count ~= loop_count then \n\
 	coroutine.yield() \n\
 end \n\
 print('[tutorial_warp] final warp_variable = ' .. tostring(self.warp_variable)) \n\
-print('[tutorial_warp] final free_variable = ' .. tostring(self.free_variable)) \n\
+print('[tutorial_warp] final free_variable = ' .. tostring(self:get_free_variable())) \n\
 print('[tutorial_warp] end pipeline')\n"));
 	}
 
 	tutorial_warp_t::tutorial_warp_t(iris_async_worker_t<>& async_worker) : stage_warp(async_worker) {}
 	tutorial_warp_t::~tutorial_warp_t() noexcept {
+	}
+
+	int tutorial_warp_t::get_free_variable() const noexcept {
+		return free_variable.load();
 	}
 
 	iris_coroutine_t<void> tutorial_warp_t::pipeline() {
@@ -50,13 +54,15 @@ print('[tutorial_warp] end pipeline')\n"));
 		// switch to any worker of thread poll
 		co_await iris_switch(static_cast<iris_warp_t<iris_async_worker_t<>>*>(nullptr));
 
-		// operations on `free` may be executed on multiple threads at the same time!
-		int free_value = free_variable;
+		// operations on `free` may be executed on multiple threads at the same
+		// time! atomic keeps the demo race defined (no UB); the result is
+		// simply nondeterministic
+		int free_value = free_variable.load();
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		free_variable = free_value + 1;
-		free_value = free_variable;
+		free_variable.store(free_value + 1);
+		free_value = free_variable.load();
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		free_variable = free_value - 1;
+		free_variable.store(free_value - 1);
 
 		// don't forget to switch back!
 		co_await iris_switch(current);

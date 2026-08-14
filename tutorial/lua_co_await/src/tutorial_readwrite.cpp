@@ -27,7 +27,7 @@ end \n\
 print('[turorial_readwrite] end pipeline')\n"));
 	}
 
-	tutorial_readwrite_t::tutorial_readwrite_t(iris_async_worker_t<>& async_worker) : stage_warp(async_worker) {}
+	tutorial_readwrite_t::tutorial_readwrite_t(iris_async_worker_t<>& async_worker) : stage_warp(async_worker), phase_barrier(async_worker, 20, false) {}
 	tutorial_readwrite_t::~tutorial_readwrite_t() noexcept {}
 
 	iris_coroutine_t<void> tutorial_readwrite_t::pipeline() {
@@ -43,6 +43,10 @@ print('[turorial_readwrite] end pipeline')\n"));
 				printf("Read end ... \n");
 			}
 
+			// every reader must finish before any writer starts: the fence
+			// only DETECTS the violation, the barrier PREVENTS it
+			co_await phase_barrier;
+
 			// write phase
 			co_await iris_switch(&stage_warp);
 			{
@@ -51,6 +55,9 @@ print('[turorial_readwrite] end pipeline')\n"));
 				std::this_thread::sleep_for(std::chrono::milliseconds { 50 });
 				printf("Write end ... \n");
 			}
+
+			// every writer must finish before the next read stage starts
+			co_await phase_barrier;
 		}
 
 		co_await iris_switch(current);

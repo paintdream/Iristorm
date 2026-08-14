@@ -55,7 +55,6 @@ namespace iris {
 		// pool instead of being queued through a warp (the frame gate itself
 		// needs no warp affinity)
 		iris_barrier_t<void, bool, iris_async_worker_t<>> frame;
-		iris_event_t<warp_t> frame_done;
 		iris_pipe_t<int, warp_t> pipe;
 
 		std::atomic<int> frame_count{ 0 };

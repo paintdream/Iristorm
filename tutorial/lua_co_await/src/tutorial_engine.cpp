@@ -36,7 +36,7 @@ print('[tutorial_engine] complete!')\n"));
 
 	tutorial_engine_t::tutorial_engine_t() : async_worker(std::make_shared<iris_async_worker_t<>>()),
 		audio_warp(*async_worker), script_warp(*async_worker), render_warp(*async_worker),
-		frame(*async_worker, 2, true), frame_done(*async_worker), pipe(*async_worker) {}
+		frame(*async_worker, 2, true), pipe(*async_worker) {}
 
 	tutorial_engine_t::~tutorial_engine_t() noexcept {
 		// force teardown on destruction
@@ -73,13 +73,18 @@ print('[tutorial_engine] complete!')\n"));
 		// the same gate can be reused every frame.
 		frame.dispatch([](auto&) {});
 
-		// wait until the pipeline coroutine signals this frame's completion,
-		// so every dispatch is strictly paired with one frame (no orphan
-		// dispatches left hanging in the barrier at teardown)
-		while (!frame_done.await_ready()) {
+		// wait until the pipeline coroutine finishes this frame (frame count
+		// advances). A timeout guard turns a stuck frame into a report
+		// instead of a hang.
+		int before = frame_count.load(std::memory_order_relaxed);
+		int guard = 0;
+		while (frame_count.load(std::memory_order_relaxed) <= before) {
 			std::this_thread::sleep_for(std::chrono::microseconds(100));
+			if (++guard > 50000) {
+				printf("[engine] tick timeout waiting for frame %d\n", before + 1);
+				break;
+			}
 		}
-		frame_done.reset();
 	}
 
 	void tutorial_engine_t::sleep(size_t milliseconds) const noexcept {
@@ -126,10 +131,8 @@ print('[tutorial_engine] complete!')\n"));
 			// produce this frame's value for the next frame
 			pipe.emplace(frame_index);
 			frame_index++;
+			// publish frame completion; tick() is waiting for the count
 			frame_count.store(frame_index, std::memory_order_relaxed);
-
-			// signal frame completion; tick() is waiting on this event
-			frame_done.notify();
 
 			if (frame_index >= static_cast<int>(total_frames)) {
 				break;
