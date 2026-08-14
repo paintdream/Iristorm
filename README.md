@@ -1104,6 +1104,19 @@ end
 
 At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait for one to finish.
 
+## Tutorials
+
+- [tutorial/lua_co_await/](tutorial/lua_co_await/) — the fundamental tutorial:
+  binding, async wait, warp mutual exclusion, resource quotas, read/write fences.
+  Run with `require("lua_co_await").new():run_tutorials()`.
+- [tutorial/lua_event_framework/](tutorial/lua_event_framework/) — a minimal
+  event-driven framework built on the same primitives, demonstrating how real
+  iris-based projects (e.g. paintsnownext) structure the Lua/C++ interaction:
+  a Lua-driven message loop, embedded callbacks that never yield, async work
+  forwarded to the worker pool, coroutine pipelines that yield, and results
+  polled back in the loop — with no blocking flow and zero external
+  dependencies. Run with `lua.exe scripts/Main.lua --auto`.
+
 ## Files
 
 | File | Description |
@@ -1118,4 +1131,5 @@ At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait
 | [test/iris_coroutine_demo.cpp](test/iris_coroutine_demo.cpp) | C++ coroutine examples |
 | [test/iris_lua_demo.cpp](test/iris_lua_demo.cpp) | Lua binding examples |
 | [tutorial/lua_co_await/](tutorial/lua_co_await/) | Full Lua + coroutine integration tutorial |
+| [tutorial/lua_event_framework/](tutorial/lua_event_framework/) | Event-driven framework tutorial: receive events → forward to workers → poll results in a non-blocking Lua-side event loop (zero external dependencies) |
 
