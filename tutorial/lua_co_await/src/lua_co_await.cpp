@@ -16,6 +16,7 @@
 #include "tutorial_object.h"
 #include "tutorial_event.h"
 #include "tutorial_barrier.h"
+#include "tutorial_luabridge.h"
 
 namespace iris {
 	void lua_co_await_t::lua_registar(iris_lua_t&& lua, std::nullptr_t) {
@@ -35,6 +36,7 @@ namespace iris {
 		lua.set_current<&lua_co_await_t::tutorial_object>("tutorial_object");
 		lua.set_current<&lua_co_await_t::tutorial_event>("tutorial_event");
 		lua.set_current<&lua_co_await_t::tutorial_barrier>("tutorial_barrier");
+		lua.set_current<&lua_co_await_t::tutorial_luabridge>("tutorial_luabridge");
 		lua.set_current<&lua_co_await_t::run_tutorials>("run_tutorials");
 
 		// shared-library crossing
@@ -203,6 +205,10 @@ namespace iris {
 		});
 	}
 
+	iris_lua_t::ref_t lua_co_await_t::tutorial_luabridge(iris_lua_t&& lua) {
+		return lua.make_type<tutorial_luabridge_t>();
+	}
+
 	void lua_co_await_t::run_tutorials(iris_lua_t::refptr_t<lua_co_await_t>&& self, iris_lua_t&& lua) {
 		lua.call<void>(lua.load("local co_await = ... \n\
 co_await:start(4) \n\
@@ -258,7 +264,12 @@ coroutine.wrap(function () \n\
 	print('complete barrier') \n\
 	complete_count = complete_count + 1 \n\
 end)() \n\
-while complete_count < 10 do \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_luabridge().new():run() \n\
+	print('complete luabridge') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+while complete_count < 11 do \n\
 	co_await:poll(1000) \n\
 end \n\
 co_await:terminate() \n\
