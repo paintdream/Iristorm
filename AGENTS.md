@@ -6,8 +6,7 @@ Header-only C++ async framework (M:N warp scheduler, C++20 coroutines, Lua 5.5 b
 
 - `src/iris_*.h` — the library: header-only, pure standard library, zero external dependencies.
 - `test/*_demo.cpp` — standalone demos.
-- `tutorial/lua_co_await` — fundamental Lua + coroutine tutorial.
-- `tutorial/lua_event_framework` — event-driven framework tutorial (reference pattern for iris-based projects).
+- `tutorial/` — tutorial projects.
 
 ## Rules
 
