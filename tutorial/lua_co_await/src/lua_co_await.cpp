@@ -10,6 +10,12 @@
 #include "tutorial_quota.h"
 #include "tutorial_warp.h"
 #include "tutorial_readwrite.h"
+#include "tutorial_result.h"
+#include "tutorial_callback.h"
+#include "tutorial_module.h"
+#include "tutorial_object.h"
+#include "tutorial_event.h"
+#include "tutorial_barrier.h"
 
 namespace iris {
 	void lua_co_await_t::lua_registar(iris_lua_t&& lua, std::nullptr_t) {
@@ -23,6 +29,12 @@ namespace iris {
 		lua.set_current<&lua_co_await_t::tutorial_warp>("tutorial_warp");
 		lua.set_current<&lua_co_await_t::tutorial_quota>("tutorial_quota");
 		lua.set_current<&lua_co_await_t::tutorial_readwrite>("tutorial_readwrite");
+		lua.set_current<&lua_co_await_t::tutorial_result>("tutorial_result");
+		lua.set_current<&lua_co_await_t::tutorial_callback>("tutorial_callback");
+		lua.set_current<&lua_co_await_t::tutorial_module>("tutorial_module");
+		lua.set_current<&lua_co_await_t::tutorial_object>("tutorial_object");
+		lua.set_current<&lua_co_await_t::tutorial_event>("tutorial_event");
+		lua.set_current<&lua_co_await_t::tutorial_barrier>("tutorial_barrier");
 		lua.set_current<&lua_co_await_t::run_tutorials>("run_tutorials");
 
 		// shared-library crossing
@@ -158,6 +170,39 @@ namespace iris {
 		});
 	}
 
+	iris_lua_t::ref_t lua_co_await_t::tutorial_result(iris_lua_t&& lua) {
+		return lua.make_type<tutorial_result_t>();
+	}
+
+	iris_lua_t::ref_t lua_co_await_t::tutorial_callback(iris_lua_t&& lua) {
+		assert(async_worker != nullptr);
+		return lua.make_type<tutorial_callback_t>().with(lua, [&](iris_lua_t lua) {
+			lua.set_current_new<&iris_lua_t::place_new_object<tutorial_callback_t, std::reference_wrapper<iris_async_worker_t<>>>>("new", std::ref(*async_worker));
+		});
+	}
+
+	iris_lua_t::ref_t lua_co_await_t::tutorial_module(iris_lua_t&& lua) {
+		return lua.make_type<tutorial_module_t>();
+	}
+
+	iris_lua_t::ref_t lua_co_await_t::tutorial_object(iris_lua_t&& lua) {
+		return lua.make_type<tutorial_object_t>();
+	}
+
+	iris_lua_t::ref_t lua_co_await_t::tutorial_event(iris_lua_t&& lua) {
+		assert(async_worker != nullptr);
+		return lua.make_type<tutorial_event_t>().with(lua, [&](iris_lua_t lua) {
+			lua.set_current_new<&iris_lua_t::place_new_object<tutorial_event_t, std::reference_wrapper<iris_async_worker_t<>>>>("new", std::ref(*async_worker));
+		});
+	}
+
+	iris_lua_t::ref_t lua_co_await_t::tutorial_barrier(iris_lua_t&& lua, size_t count) {
+		assert(async_worker != nullptr);
+		return lua.make_type<tutorial_barrier_t>().with(lua, [&](iris_lua_t lua) {
+			lua.set_current_new<&iris_lua_t::place_new_object<tutorial_barrier_t, std::reference_wrapper<iris_async_worker_t<>>, size_t>>("new", std::ref(*async_worker), count);
+		});
+	}
+
 	void lua_co_await_t::run_tutorials(iris_lua_t::refptr_t<lua_co_await_t>&& self, iris_lua_t&& lua) {
 		lua.call<void>(lua.load("local co_await = ... \n\
 co_await:start(4) \n\
@@ -183,7 +228,37 @@ coroutine.wrap(function () \n\
 	print('complete readwrite') \n\
 	complete_count = complete_count + 1 \n\
 end)() \n\
-while complete_count < 4 do \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_result().new():run() \n\
+	print('complete result') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_callback().new():run() \n\
+	print('complete callback') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_module().new():run() \n\
+	print('complete module') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_object().new():run() \n\
+	print('complete object') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_event().new():run() \n\
+	print('complete event') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_barrier(4).new():run() \n\
+	print('complete barrier') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+while complete_count < 10 do \n\
 	co_await:poll(1000) \n\
 end \n\
 co_await:terminate() \n\

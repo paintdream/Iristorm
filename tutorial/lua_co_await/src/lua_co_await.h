@@ -30,6 +30,13 @@ namespace iris {
 		iris_lua_t::ref_t tutorial_warp(iris_lua_t&& lua);
 		iris_lua_t::ref_t tutorial_quota(iris_lua_t&& lua, size_t capacity);
 		iris_lua_t::ref_t tutorial_readwrite(iris_lua_t&& lua);
+		// framework patterns (see docs/)
+		iris_lua_t::ref_t tutorial_result(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_callback(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_module(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_object(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_event(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_barrier(iris_lua_t&& lua, size_t count);
 		static void run_tutorials(iris_lua_t::refptr_t<lua_co_await_t>&& self, iris_lua_t&& lua);
 
 	protected:

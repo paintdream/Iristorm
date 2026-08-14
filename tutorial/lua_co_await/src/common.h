@@ -32,3 +32,19 @@ SOFTWARE.
 #include <iris_dispatcher.h>
 #include <iris_lua.h>
 
+namespace iris {
+	// Type-alias layer (see docs/05-framework-patterns.md §1; a full-scale
+	// version is paintsnownext's src/PaintsNow.h).
+	using async_worker_t = iris_async_worker_t<>;
+	using warp_t = iris_warp_t<iris_async_worker_t<>>;
+
+	template <typename T>
+	using coroutine_t = iris_coroutine_t<T>;
+
+	template <typename T>
+	using result_t = iris_lua_t::optional_result_t<T>;
+	using result_error_t = iris_lua_t::result_error_t;
+
+	using lua_ref_t = iris_lua_t::ref_t;
+}
+
