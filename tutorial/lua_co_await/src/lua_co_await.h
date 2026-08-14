@@ -38,6 +38,9 @@ namespace iris {
 		iris_lua_t::ref_t tutorial_event(iris_lua_t&& lua);
 		iris_lua_t::ref_t tutorial_barrier(iris_lua_t&& lua, size_t count);
 		iris_lua_t::ref_t tutorial_luabridge(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_system(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_engine(iris_lua_t&& lua);
+		iris_lua_t::ref_t tutorial_dispatcher(iris_lua_t&& lua);
 		static void run_tutorials(iris_lua_t::refptr_t<lua_co_await_t>&& self, iris_lua_t&& lua);
 
 	protected:

@@ -17,6 +17,9 @@
 #include "tutorial_event.h"
 #include "tutorial_barrier.h"
 #include "tutorial_luabridge.h"
+#include "tutorial_system.h"
+#include "tutorial_engine.h"
+#include "tutorial_dispatcher.h"
 
 namespace iris {
 	void lua_co_await_t::lua_registar(iris_lua_t&& lua, std::nullptr_t) {
@@ -37,6 +40,9 @@ namespace iris {
 		lua.set_current<&lua_co_await_t::tutorial_event>("tutorial_event");
 		lua.set_current<&lua_co_await_t::tutorial_barrier>("tutorial_barrier");
 		lua.set_current<&lua_co_await_t::tutorial_luabridge>("tutorial_luabridge");
+		lua.set_current<&lua_co_await_t::tutorial_system>("tutorial_system");
+		lua.set_current<&lua_co_await_t::tutorial_engine>("tutorial_engine");
+		lua.set_current<&lua_co_await_t::tutorial_dispatcher>("tutorial_dispatcher");
 		lua.set_current<&lua_co_await_t::run_tutorials>("run_tutorials");
 
 		// shared-library crossing
@@ -209,6 +215,22 @@ namespace iris {
 		return lua.make_type<tutorial_luabridge_t>();
 	}
 
+	iris_lua_t::ref_t lua_co_await_t::tutorial_system(iris_lua_t&& lua) {
+		return lua.make_type<tutorial_system_t>();
+	}
+
+	iris_lua_t::ref_t lua_co_await_t::tutorial_engine(iris_lua_t&& lua) {
+		// the engine owns its own worker pool; no shared-worker injection
+		return lua.make_type<tutorial_engine_t>();
+	}
+
+	iris_lua_t::ref_t lua_co_await_t::tutorial_dispatcher(iris_lua_t&& lua) {
+		assert(async_worker != nullptr);
+		return lua.make_type<tutorial_dispatcher_t>().with(lua, [&](iris_lua_t lua) {
+			lua.set_current_new<&iris_lua_t::place_new_object<tutorial_dispatcher_t, std::reference_wrapper<iris_async_worker_t<>>>>("new", std::ref(*async_worker));
+		});
+	}
+
 	void lua_co_await_t::run_tutorials(iris_lua_t::refptr_t<lua_co_await_t>&& self, iris_lua_t&& lua) {
 		lua.call<void>(lua.load("local co_await = ... \n\
 co_await:start(4) \n\
@@ -269,7 +291,22 @@ coroutine.wrap(function () \n\
 	print('complete luabridge') \n\
 	complete_count = complete_count + 1 \n\
 end)() \n\
-while complete_count < 11 do \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_system().new():run() \n\
+	print('complete system') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_engine().new():run() \n\
+	print('complete engine') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+coroutine.wrap(function () \n\
+	co_await:tutorial_dispatcher().new():run() \n\
+	print('complete dispatcher') \n\
+	complete_count = complete_count + 1 \n\
+end)() \n\
+while complete_count < 14 do \n\
 	co_await:poll(1000) \n\
 end \n\
 co_await:terminate() \n\
