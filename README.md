@@ -33,6 +33,7 @@ Iristorm is an extensible asynchronous **header-only** framework written in pure
   - [Async Wait from Lua](#async-wait-from-lua)
   - [Warp Scheduling from Lua Coroutines](#warp-scheduling-from-lua-coroutines)
   - [Resource Quotas from Lua](#resource-quotas-from-lua)
+- [Tutorials](#tutorials)
 - [Files](#files)
 
 ## Build
@@ -911,7 +912,8 @@ There is also `shared_local_object_t`, a variant that tracks a single "canonical
 
 When C++20 coroutines are available, Iristorm bridges **C++ coroutines** with **Lua coroutines** seamlessly. A C++ method returning `iris_coroutine_t<T>` automatically **yields** the calling Lua coroutine and **resumes** it when the C++ coroutine completes — no manual coroutine management needed on the Lua side.
 
-See the full tutorial at [tutorial/lua_co_await](tutorial/lua_co_await).
+See the full tutorial at [tutorial/lua_co_await](tutorial/lua_co_await), with
+systematic docs in [tutorial/lua_co_await/docs/](tutorial/lua_co_await/docs/README.md).
 
 ### Exposing Coroutine Methods to Lua
 
@@ -1107,15 +1109,43 @@ At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait
 ## Tutorials
 
 - [tutorial/lua_co_await/](tutorial/lua_co_await/) — the fundamental tutorial:
-  binding, async wait, warp mutual exclusion, resource quotas, read/write fences.
+  binding, async wait, warp mutual exclusion, resource quotas, read/write
+  fences, plus framework patterns, ECS, frame engines, and DAG dispatch.
   Run with `require("lua_co_await").new():run_tutorials()`.
+
+  The 15 modules (`co_await:tutorial_xxx().new():run()`, all launched together
+  by `run_tutorials()`):
+
+  - `tutorial_binding` — binding basics: multi-type parameters, `ref_t` load/save, `refptr_t` object holders
+  - `tutorial_async` — async wait: yields the Lua coroutine, sleeps on a worker thread
+  - `tutorial_warp` — warp mutual exclusion, contrasted with a deliberate (atomic) race
+  - `tutorial_quota` — resource quotas: at most `capacity` units of work in flight
+  - `tutorial_readwrite` — read/write fences as race detectors, plus phase barriers for stage switches
+  - `tutorial_result` — `result_t<T>` / `result_error_t` error convention (failed results are raised as Lua errors, catch with `pcall`)
+  - `tutorial_callback` — embedded callbacks that never yield: the event-sender + two-step (send → poll → apply) pattern
+  - `tutorial_module` — module type registry: a `types()` table of registered sub-types
+  - `tutorial_object` — object with an automatic method reentrancy guard (`lua_method_begin` / `lua_method_end`)
+  - `tutorial_event` — `iris_event_t`: N coroutines waiting for a single `notify()`
+  - `tutorial_barrier` — `iris_barrier_t`: N participants released together (rendezvous)
+  - `tutorial_luabridge` — cross-VM bridge: values, functions, objects, and cyclic tables between two Lua states
+  - `tutorial_system` — ECS: entity allocator, archetype-based component storage, `iterate<...>()` queries
+  - `tutorial_engine` — frame-loop engine: barrier frame gate, `iris_pipe_t` frame data, audio → script → render stage warps
+  - `tutorial_dispatcher` — DAG dispatcher: `allocate` / `order` / `dispatch`, CRTP completion hooks
+
+  Systematic documentation (project conventions, design principles, the
+  script execution model, workflows, framework patterns):
+  [tutorial/lua_co_await/docs/](tutorial/lua_co_await/docs/), start with
+  [docs/README.md](tutorial/lua_co_await/docs/README.md). Stress/regression
+  scripts live in [scripts/](tutorial/lua_co_await/scripts/).
+
 - [tutorial/lua_event_framework/](tutorial/lua_event_framework/) — a minimal
   event-driven framework built on the same primitives, demonstrating how real
   iris-based projects (e.g. paintsnownext) structure the Lua/C++ interaction:
   a Lua-driven message loop, embedded callbacks that never yield, async work
   forwarded to the worker pool, coroutine pipelines that yield, and results
   polled back in the loop — with no blocking flow and zero external
-  dependencies. Run with `lua.exe scripts/Main.lua --auto`.
+  dependencies. Run with `lua.exe scripts/Main.lua --auto`. See also its
+  [docs](tutorial/lua_event_framework/docs/README.md).
 
 ## Files
 
@@ -1130,6 +1160,7 @@ At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait
 | [test/iris_dispatcher_demo.cpp](test/iris_dispatcher_demo.cpp) | Warp system and DAG dispatcher examples |
 | [test/iris_coroutine_demo.cpp](test/iris_coroutine_demo.cpp) | C++ coroutine examples |
 | [test/iris_lua_demo.cpp](test/iris_lua_demo.cpp) | Lua binding examples |
-| [tutorial/lua_co_await/](tutorial/lua_co_await/) | Full Lua + coroutine integration tutorial |
-| [tutorial/lua_event_framework/](tutorial/lua_event_framework/) | Event-driven framework tutorial: receive events → forward to workers → poll results in a non-blocking Lua-side event loop (zero external dependencies) |
+| [tutorial/lua_co_await/](tutorial/lua_co_await/) | Full Lua + coroutine integration tutorial: 15 runnable modules + docs (see [Tutorials](#tutorials)) |
+| [tutorial/lua_co_await/docs/](tutorial/lua_co_await/docs/) | Tutorial docs: instructions, design principles, architecture, workflows, framework patterns |
+| [tutorial/lua_event_framework/](tutorial/lua_event_framework/) | Event-driven framework tutorial: receive events → forward to workers → poll results in a non-blocking Lua-side event loop (zero external dependencies, with docs) |
 
