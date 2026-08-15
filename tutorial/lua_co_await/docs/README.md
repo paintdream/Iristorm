@@ -19,7 +19,10 @@ and `doc/`), generalized so it applies to any iris-based project.
 ## How to read
 
 1. **Run the tutorials first.** `require("lua_co_await").new():run_tutorials()`
-   shows the primitives (binding, async, warp, quota, read/write fences).
+   shows the primitives (binding, async, warp, quota, read/write fences,
+   result/error handling, callbacks, modules, objects, events, barriers,
+   cross-VM bridges, ECS, frame engines, DAG dispatch, and the manager/unit
+   `__host` lifetime pattern).
 2. **Read 01 → 02 → 03** for the rules and the mental model: what belongs in
    Lua vs C++, how concurrency is structured, and how script callbacks must
    behave.

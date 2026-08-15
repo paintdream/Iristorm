@@ -106,6 +106,77 @@ serializing through tables — used for data exchange between VMs.
 **Reference:** paintsnownext `src/PaintsNow.h` (`StackIndex`),
 `plugin/luabridge` (multi-VM exchange).
 
+## 7. Hosted objects: `__host` lifetime anchor (Manager/Unit)
+
+**Problem:** a Manager class manages objects of a Unit class, and the Manager
+instance must **always outlive** every Unit instance. Hand-enforcing "destroy
+units before the manager" is error-prone at `lua_close` or when reference
+cycles exist.
+
+**Pattern:** make the ordering structural, entirely on the Lua side:
+
+1. Register the **Manager metatable FIRST** (its type table), then create the
+   Manager instance.
+2. Register the **Unit metatable SECOND**, with a `__host` field in the unit
+   type table pointing at the Manager instance.
+3. Every Unit userdata strongly references its metatable, so while any Unit
+   (or the Unit type) lives, the Manager lives:
+   `unit userdata → metatable → __host → manager instance`. Dropping the
+   script's direct Manager reference changes nothing.
+4. When everything dies together (a reference cycle, or `lua_close`), Lua's
+   GC finalizes objects in the **reverse order of becoming finalizable**
+   (the order their metatables were set; verified on Lua 5.5.1): the Unit
+   userdata (metatable set later) is destroyed **before** the Manager
+   (metatable set first).
+
+**Scope — one-way only:** the `__host` chain is a **one-way** reference
+(unit → manager). In pure Lua this distinction is invisible: the GC
+collects bidirectional cycles naturally, so nobody thinks twice. In a
+Lua/C++ project it is a trap: the C++-side hold is not explicit in the
+script, and a `refptr_t` / `luaL_ref` reference is a GC **root** — a
+"silent" bidirectional binding (the manager holds its units, nothing ever
+removes them) keeps every unit alive until `lua_close`. If the manager must
+hold its units, make it an explicit **add/remove** protocol (see below).
+
+The Manager's `lua_finalize` can therefore assert "every registered unit is
+already destroyed" — if the order were ever wrong, the assert fires. This
+order guarantee is independent of how the manager references its units:
+even a registry-anchored cycle (units held through `luaL_ref` GC roots) dies
+in the right order at `lua_close`.
+
+The technique only covers the unit → manager direction. The reverse
+direction is an ownership decision with its own rules:
+
+- **One-way binding (recommended default):** the manager does not hold its
+  units. No cycle exists; units are owned by their natural owners and the
+  `__host` chain alone guarantees the order.
+- **Bidirectional binding:** holding a unit is an explicit "keep alive"
+  decision, so the system needs an explicit **add/remove** protocol — a
+  unit stays alive until it is removed from the manager or the manager dies.
+- **When the hold can be collected** depends on its implementation: registry
+  references are GC roots (the cycle survives until `lua_close`; the order
+  at close is still correct), while a GC-visible edge (e.g. a units table in
+  a userdata **uservalue slot**, `lua_uservalue_count()`, Lua 5.4+ — on
+  5.1-5.3 the equivalent is the userdata environment table via
+  `lua_setfenv`) allows a mid-run `collectgarbage()` to collect the whole
+  cycle — units first, host last.
+- **Bidirectional without registry roots (per-instance types):** give each
+  manager instance its own unit type (per-instance types, not global
+  registry types) and keep the units ref table in the unit metatable; C++
+  addresses units by an integer index into that table, looked up on demand
+  through the metatable — no persistent Lua reference is held in C++, so no
+  new reference type is needed.
+
+Script-level note for self-verifying teardowns: the final
+`collectgarbage()` must run **outside** the function that received the
+bundle — while a Lua function runs, its `...` vararg tuple still references
+the call arguments, so an in-function collect cannot collect the objects the
+function itself is holding.
+
+**Reference:** `tutorial/lua_co_await/src/tutorial_manager.{h,cpp}` (runnable
+module `tutorial_manager`); paintsnownext (host/module instances embedded in
+object metatables).
+
 ## Putting it together
 
 The minimal end-to-end reference is `tutorial/lua_event_framework`: alias

@@ -33,6 +33,7 @@ Iristorm is an extensible asynchronous **header-only** framework written in pure
   - [Async Wait from Lua](#async-wait-from-lua)
   - [Warp Scheduling from Lua Coroutines](#warp-scheduling-from-lua-coroutines)
   - [Resource Quotas from Lua](#resource-quotas-from-lua)
+- [Hosted Objects: Manager/Unit Lifetime](#hosted-objects-managerunit-lifetime)
 - [Tutorials](#tutorials)
 - [Files](#files)
 
@@ -1106,6 +1107,115 @@ end
 
 At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait for one to finish.
 
+## Hosted Objects: Manager/Unit Lifetime
+
+A recurring pattern in iris-based projects is a
+**Manager** class that manages objects of another class (call them **Unit**),
+with the requirement that the Manager instance must **always outlive** every
+Unit instance. Instead of hand-enforcing "destroy units before the manager"
+(which is error-prone at `lua_close` or when reference cycles exist), the
+ordering can be made **structural**, entirely on the Lua side:
+
+1. Register the **Manager metatable FIRST**, then create the Manager instance.
+2. Register the **Unit metatable SECOND**, with a `__host` field in the unit
+   type table pointing at the Manager instance.
+3. Every Unit userdata strongly references its metatable, so while any Unit
+   (or the Unit type) lives, the Manager lives:
+   `unit userdata → metatable → __host → manager instance`. Dropping the
+   script's direct Manager reference changes nothing.
+4. When everything dies together (a reference cycle, or `lua_close`), Lua's
+   GC finalizes objects in the **reverse order of becoming finalizable** (the
+   order their metatables were set; verified on Lua 5.5.1): units (metatable
+   set later) are destroyed **before** the Manager (metatable set first).
+
+> **Scope — one-way only:** the `__host` chain is a **one-way** reference
+> (unit → manager). In pure Lua this distinction is invisible: the GC
+> collects bidirectional cycles naturally, so nobody thinks twice. In a
+> Lua/C++ project it is a trap: the C++-side hold is not explicit in the
+> script, and a `refptr_t` / `luaL_ref` reference is a GC **root** — a
+> "silent" bidirectional binding (the manager holds its units, nothing ever
+> removes them) keeps every unit alive until `lua_close`. If the manager
+> must hold its units, make it an explicit **add/remove** protocol — see
+> below.
+
+Registration (see [tutorial_manager.h](tutorial/lua_co_await/src/tutorial_manager.h)):
+
+```C++
+// 1. the Manager (host) metatable is registered FIRST
+auto manager_type = lua.make_registry_type<tutorial_manager_t>();
+// 2. the host instance is created before any unit exists
+auto host = lua.make_registry_object<tutorial_manager_t>();
+// 3. the Unit metatable is registered SECOND, carrying __host -> the host
+auto unit_type = lua.make_registry_type<tutorial_unit_t>().with(lua, [&](iris_lua_t lua) {
+	lua.set_current("__host", host);
+});
+```
+
+From Lua:
+
+```lua
+local unit = unit_type.new()
+assert(getmetatable(unit).__host == host)  -- the unit reaches its host
+host = nil                                 -- dropping the direct reference...
+collectgarbage()                           -- ...changes nothing: the unit
+assert(unit:get_host() ~= nil)             -- keeps the host alive
+```
+
+The Manager's `lua_finalize` can then assert that every registered unit was
+already destroyed — if the order were ever wrong, the assert fires:
+
+```C++
+void tutorial_manager_t::lua_finalize(iris_lua_t lua, int index, tutorial_manager_t* p) noexcept {
+	// units are finalized BEFORE the host (reverse finalization order)
+	IRIS_ASSERT(p->live_registered_units.load() == 0);
+}
+```
+
+The guarantees above are **independent of how the manager references its
+units**: even a cycle anchored through registry references (GC roots) only
+dies at `lua_close` — and the destruction order at close is still correct
+(verified: units are always finalized before the host). A registry-based
+hold simply means "the developer chose to keep the cycle alive until close"
+— a resource-management decision, not a defect of this technique.
+
+### The manager → units direction is an ownership decision
+
+The technique only covers the **unit → manager** direction. The reverse
+direction is an ownership decision with its own rules:
+
+- The manager does **not** hold its units (one-way binding) — no cycle
+  exists at all: units are owned by their natural owners, and the `__host`
+  chain alone guarantees the order.
+- The manager **does** hold its units (bidirectional binding) — holding a
+  unit is an explicit "keep alive" decision, so the system needs an explicit
+  **add/remove** protocol: a unit stays alive until it is removed from the
+  manager or the manager dies.
+- The implementation of the hold decides **when** the cycle can be
+  collected: registry references (`refptr_t` / `luaL_ref`) are GC roots, so
+  the cycle survives until `lua_close` (the order at close is still
+  correct); a GC-visible edge (e.g. a units table in the manager userdata's
+  **uservalue slot**, `lua_uservalue_count()`, requires Lua 5.4+; on
+  5.1-5.3 the equivalent is the userdata environment table via
+  `lua_setfenv`) lets a mid-run `collectgarbage()` collect the whole cycle —
+  again units first, host last.
+- **Bidirectional without registry roots (per-instance types):** give each
+  manager instance its **own** unit type (per-instance types, not global
+  registry types) and keep the units ref table in the unit metatable; C++
+  then addresses units by an **integer index** into that table, looked up
+  on demand through the metatable — no persistent Lua reference is held in
+  C++, so no new reference type is needed. (Concept only; the tutorial
+  demonstrates the uservalue variant.)
+
+One script-level note when verifying a mid-run teardown from Lua: the final
+`collectgarbage()` must run **outside** the function that received the
+bundle — while a Lua function runs, its `...` vararg tuple still references
+the call arguments, so an in-function collect cannot collect the objects the
+function itself is holding.
+
+Full writeup: [docs/05-framework-patterns.md](tutorial/lua_co_await/docs/05-framework-patterns.md),
+pattern 7. Runnable demo: `co_await:tutorial_manager():run()` (module
+[tutorial_manager](tutorial/lua_co_await/src/tutorial_manager.cpp)).
+
 ## Tutorials
 
 - [tutorial/lua_co_await/](tutorial/lua_co_await/) — the fundamental tutorial:
@@ -1113,7 +1223,7 @@ At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait
   fences, plus framework patterns, ECS, frame engines, and DAG dispatch.
   Run with `require("lua_co_await").new():run_tutorials()`.
 
-  The 15 modules (`co_await:tutorial_xxx().new():run()`, all launched together
+  The 16 modules (`co_await:tutorial_xxx().new():run()`, all launched together
   by `run_tutorials()`):
 
   - `tutorial_binding` — binding basics: multi-type parameters, `ref_t` load/save, `refptr_t` object holders
@@ -1131,6 +1241,7 @@ At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait
   - `tutorial_system` — ECS: entity allocator, archetype-based component storage, `iterate<...>()` queries
   - `tutorial_engine` — frame-loop engine: barrier frame gate, `iris_pipe_t` frame data, audio → script → render stage warps
   - `tutorial_dispatcher` — DAG dispatcher: `allocate` / `order` / `dispatch`, CRTP completion hooks
+  - `tutorial_manager` — Manager/Unit lifetime: the unit metatable's `__host` points at the manager instance, so units keep the manager alive and Lua GC destroys units before the host (asserted by the host's `lua_finalize`; see [Hosted Objects: Manager/Unit Lifetime](#hosted-objects-managerunit-lifetime))
 
   Systematic documentation (project conventions, design principles, the
   script execution model, workflows, framework patterns):
@@ -1140,7 +1251,7 @@ At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait
 
 - [tutorial/lua_event_framework/](tutorial/lua_event_framework/) — a minimal
   event-driven framework built on the same primitives, demonstrating how real
-  iris-based projects (e.g. paintsnownext) structure the Lua/C++ interaction:
+  iris-based projects structure the Lua/C++ interaction:
   a Lua-driven message loop, embedded callbacks that never yield, async work
   forwarded to the worker pool, coroutine pipelines that yield, and results
   polled back in the loop — with no blocking flow and zero external
@@ -1160,7 +1271,7 @@ At most 3 workers run concurrently (3 × 33 = 99 ≤ 100), while a 4th must wait
 | [test/iris_dispatcher_demo.cpp](test/iris_dispatcher_demo.cpp) | Warp system and DAG dispatcher examples |
 | [test/iris_coroutine_demo.cpp](test/iris_coroutine_demo.cpp) | C++ coroutine examples |
 | [test/iris_lua_demo.cpp](test/iris_lua_demo.cpp) | Lua binding examples |
-| [tutorial/lua_co_await/](tutorial/lua_co_await/) | Full Lua + coroutine integration tutorial: 15 runnable modules + docs (see [Tutorials](#tutorials)) |
+| [tutorial/lua_co_await/](tutorial/lua_co_await/) | Full Lua + coroutine integration tutorial: 16 runnable modules + docs (see [Tutorials](#tutorials)) |
 | [tutorial/lua_co_await/docs/](tutorial/lua_co_await/docs/) | Tutorial docs: instructions, design principles, architecture, workflows, framework patterns |
 | [tutorial/lua_event_framework/](tutorial/lua_event_framework/) | Event-driven framework tutorial: receive events → forward to workers → poll results in a non-blocking Lua-side event loop (zero external dependencies, with docs) |
 
