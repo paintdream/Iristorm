@@ -107,7 +107,16 @@ namespace iris {
 		// entity-based component insertion
 		bool valid(entity_t entity) const noexcept {
 			auto guard = read_fence();
-			return iris_binary_find(entity_components.begin(), entity_components.end(), entity) != entity_components.end();
+			// A tombstone entry (second == ~0, left in place by remove()) does
+			// NOT mean the entity exists: its component was deleted and the
+			// slot may be recycled. Filtering tombstones keeps Valid()/get()
+			// consistent with filter() (which already skips them) - otherwise
+			// a deleted entity whose numeric id was REUSED by a later
+			// Create() resolves to the stale tombstone and get() reads index
+			// ~0, an out-of-range slot (the RenderCamera::Tick "std::vector
+			// []" Debug assert after streaming evictions).
+			auto it = iris_binary_find(entity_components.begin(), entity_components.end(), entity);
+			return it != entity_components.end() && it->second != ~(index_t)0;
 		}
 
 		// returns true if the existing entity was replaced, or false if new entity was created
@@ -119,17 +128,39 @@ namespace iris {
 			if (iterator != entity_components.end() && iterator->second != ~(index_t)0) {
 				replace_components<sizeof...(components_t)>(iterator->second, std::forward<elements_t>(t)...);
 				return true;
-			} else {
-				if (entity_components.capacity() <= entity_components.size() + 1) {
-					entity_components.reserve(entity_components.size() * 3 / 2);
-				}
-
-				emplace_components<sizeof...(components_t)>(std::forward<elements_t>(t)...);
-				iris_binary_insert(entity_components, iris_make_key_value(entity, iris_verify_cast<index_t>(entities.end_index())));
-				entities.push(entity);
-
-				return false;
 			}
+
+			// Tombstone entry (a previous Delete left second == ~0 in place,
+			// keyed by this entity). Whatever the branch below, the entry must
+			// be (re)used, never duplicated: iris_binary_find on an entity
+			// with two entries can resolve to the stale tombstone, so
+			// Valid()/get() would read index ~0 and fetch an out-of-range
+			// slot (the RenderCamera::Tick Debug assert after an entity-id
+			// reuse). Capture whether the entry exists BEFORE the reserve
+			// below can reallocate the vector and invalidate `iterator`.
+			const bool reuseTombstone = iterator != entity_components.end();
+
+			if (entity_components.capacity() <= entity_components.size() + 1) {
+				entity_components.reserve(entity_components.size() * 3 / 2);
+			}
+
+			emplace_components<sizeof...(components_t)>(std::forward<elements_t>(t)...);
+
+			// The new component lives at the just-pushed slot
+			// (entities.end_index() before entities.push()).
+			const index_t newIndex = iris_verify_cast<index_t>(entities.end_index());
+			if (reuseTombstone) {
+				// Re-locate the entry after the reserve (the old iterator may
+				// be dangling) and point it at the new slot.
+				auto it = iris_binary_find(entity_components.begin(), entity_components.end(), entity);
+				IRIS_ASSERT(it != entity_components.end());
+				it->second = newIndex;
+			} else {
+				iris_binary_insert(entity_components, iris_make_key_value(entity, newIndex));
+			}
+
+			entities.push(entity);
+			return false;
 		}
 
 		void compress() noexcept {
