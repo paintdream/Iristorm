@@ -250,6 +250,86 @@ int main(void) {
 	iris::iris_binary_erase(str_vec, 1234);
 	iris::iris_binary_erase(str_vec, iris::iris_make_key_value(1234, ""));
 
+	// Tombstone / entity-id-reuse regression (mirrors PaintsNowNext 913a27f
+	// and this repo's eda478b29): remove() leaves a tombstone entry
+	// (second == ~0) in entity_components for the deleted entity. When the
+	// allocator reuses that id and insert() is called again, the entry must
+	// be REUSED (not duplicated), and valid()/get()/filter() must resolve to
+	// the new component - never to the stale tombstone (getting index ~0 was
+	// an out-of-range slot / Debug assert in the renderer's per-entity
+	// culling after streaming evictions).
+	{
+		iris_system_t<entity_t, block_allocator_t, std::allocator, uint8_t> reuse_system;
+		iris_entity_allocator_t<entity_t> reuse_alloc;
+
+		entity_t kept = reuse_alloc.allocate();   // 0
+		entity_t doomed = reuse_alloc.allocate(); // 1
+		reuse_system.insert(kept, 11u);
+		reuse_system.insert(doomed, 22u);
+		IRIS_ASSERT(reuse_system.valid(kept) && reuse_system.valid(doomed));
+		IRIS_ASSERT(reuse_system.get<uint8_t>(doomed) == 22u);
+		IRIS_ASSERT(reuse_system.size() == 2);
+
+		// Delete the doomed entity: its entry becomes a tombstone, its
+		// component is removed and its id is returned to the allocator.
+		reuse_system.remove(doomed);
+		reuse_alloc.free(doomed);
+		IRIS_ASSERT(!reuse_system.valid(doomed)); // tombstone is NOT alive
+		IRIS_ASSERT(reuse_system.filter<uint8_t>(doomed, [](uint8_t&) { IRIS_ASSERT(false); }) == false); // filter skips tombstones
+		IRIS_ASSERT(reuse_system.size() == 1);
+
+		// The allocator hands the SAME id back (reuse); insert must reuse the
+		// tombstone entry - not add a second key for the same entity.
+		entity_t reused = reuse_alloc.allocate();
+		IRIS_ASSERT(reused == doomed);
+		reuse_system.insert(reused, 33u);
+		IRIS_ASSERT(reuse_system.valid(reused));
+		IRIS_ASSERT(reuse_system.get<uint8_t>(reused) == 33u); // must NOT resolve to the stale tombstone (~0 slot)
+		{
+			bool hit = false;
+			IRIS_ASSERT(reuse_system.filter<uint8_t>(reused, [&](uint8_t& v) { hit = (v == 33u); }));
+			IRIS_ASSERT(hit);
+		}
+		IRIS_ASSERT(reuse_system.size() == 2);
+
+		// Exactly ONE entry per entity in entity_components (live or
+		// tombstone) - a second entry would let binary_find hit the stale
+		// tombstone on the next lookup.
+		{
+			size_t keptKeys = 0, reusedKeys = 0, keptAlive = 0, reusedAlive = 0;
+			for (auto& kv : reuse_system.get_entity_components()) {
+				const bool alive = kv.second != static_cast<size_t>(~(entity_t)0);
+				if (kv.first == kept) { keptKeys++; if (alive) keptAlive++; }
+				if (kv.first == reused) { reusedKeys++; if (alive) reusedAlive++; }
+			}
+			IRIS_ASSERT(keptKeys == 1 && reusedKeys == 1);
+			IRIS_ASSERT(keptAlive == 1 && reusedAlive == 1);
+		}
+
+		// Delete once more and re-verify the tombstone is not alive.
+		reuse_system.remove(reused);
+		reuse_alloc.free(reused);
+		IRIS_ASSERT(!reuse_system.valid(reused));
+		IRIS_ASSERT(reuse_system.size() == 1);
+		reuse_alloc.reset();
+	}
+
+	// Standalone queue sanity: swap-and-pop move + pop + re-push + indexed
+	// get must resolve to the re-pushed value (regression guard for the
+	// tombstone-reuse bookkeeping above).
+	{
+		iris_queue_quick_list_t<uint8_t, iris_default_block_allocator_t> tq;
+		tq.push(11u);
+		tq.push(22u);
+		tq.get(1) = std::move(tq.top()); // swap-and-pop move step
+		tq.pop();
+		tq.push(33u);
+		IRIS_ASSERT(tq.get(1) == 11u);
+		IRIS_ASSERT(tq.get(2) == 33u);
+		IRIS_ASSERT(tq.begin_index() == 1 && tq.end_index() == 3);
+		tq.clear();
+	}
+
 	return 0;
 }
 
