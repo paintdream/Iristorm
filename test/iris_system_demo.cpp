@@ -1,5 +1,6 @@
 #include "../src/iris_system.h"
 #include "../src/iris_common.inl"
+#include <map>
 using namespace iris;
 
 using entity_t = uint32_t;
@@ -328,6 +329,81 @@ int main(void) {
 		IRIS_ASSERT(tq.get(2) == 33u);
 		IRIS_ASSERT(tq.begin_index() == 1 && tq.end_index() == 3);
 		tq.clear();
+	}
+
+	// Multi-block churn / indexed access stress: a WIDE component makes the
+	// queue element_count small, so inserts span multiple blocks; heavy
+	// remove (pop fronts whole blocks) + entity-id reuse must leave every
+	// live entry pointing at a slot inside the active pool (regression for
+	// the TransformComponent out-of-bounds under streaming churn - a remove()
+	// swap-and-pop range bug left the top entity's entry pointing at a popped
+	// slot).
+	{
+		struct WideComp { double m[64]; }; // 512 B -> element_count = block_size/512 (multi-block)
+		iris_system_t<entity_t, block_allocator_t, std::allocator, WideComp> wide;
+		iris_entity_allocator_t<entity_t> walloc;
+
+		std::vector<entity_t> alive;
+		// wave 1: insert 800
+		for (size_t i = 0; i < 800; i++) {
+			entity_t e = walloc.allocate();
+			wide.insert(e, WideComp());
+			alive.emplace_back(e);
+		}
+		// delete ~every 3rd
+		for (size_t i = 0; i < alive.size(); i += 3) {
+			wide.remove(alive[i]);
+			walloc.free(alive[i]);
+			alive[i] = ~0u;
+		}
+		// verify all surviving entities resolve (get()/filter() must not throw out-of-bounds)
+		for (entity_t e : alive) {
+			if (e == ~0u) continue;
+			IRIS_ASSERT(wide.valid(e));
+			WideComp* w = nullptr;
+			IRIS_ASSERT(wide.filter<WideComp>(e, [&](WideComp& c) { w = &c; }));
+			IRIS_ASSERT(w != nullptr);
+			(void)w;
+		}
+		// re-insert on the freed ids (id reuse), then full re-verify
+		for (size_t i = 0; i < alive.size(); i++) {
+			if (alive[i] == ~0u) {
+				alive[i] = walloc.allocate();
+				wide.insert(alive[i], WideComp());
+			}
+		}
+		// invariant audit: single live slot per entity, each inside the pool
+		{
+			const size_t cBegin = wide.component<WideComp>().begin_index();
+			const size_t cEnd = wide.component<WideComp>().end_index();
+			std::map<size_t, size_t> slotUse;
+			for (auto& kv : wide.get_entity_components()) {
+				if (kv.second == static_cast<size_t>(~(entity_t)0)) continue;
+				const size_t s = static_cast<size_t>(kv.second);
+				IRIS_ASSERT(s >= cBegin && s < cEnd);   // live slot in range
+				IRIS_ASSERT(slotUse[s]++ == 0);         // no duplicate slots
+			}
+		}
+		for (entity_t e : alive) {
+			IRIS_ASSERT(wide.valid(e));
+			WideComp* w = nullptr;
+			IRIS_ASSERT(wide.filter<WideComp>(e, [&](WideComp& c) { w = &c; }));
+			IRIS_ASSERT(w != nullptr);
+		}
+		// remove everything; after each removal no live entry may point at a
+		// popped slot (the exact failure mode of the old swap-and-pop range bug).
+		for (entity_t e : alive) {
+			wide.remove(e);
+			walloc.free(e);
+			const size_t cb = wide.component<WideComp>().begin_index(), ce = wide.component<WideComp>().end_index();
+			for (auto& kv : wide.get_entity_components()) {
+				if (kv.second == static_cast<size_t>(~(entity_t)0)) continue;
+				const size_t s = static_cast<size_t>(kv.second);
+				IRIS_ASSERT(s >= cb && s < ce);
+			}
+		}
+		walloc.reset();
+		wide.clear();
 	}
 
 	return 0;

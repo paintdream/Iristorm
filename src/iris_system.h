@@ -253,7 +253,17 @@ namespace iris {
 					}
 
 					// move!!
-					auto it = iris_binary_find(entity < top_entity ? ip : entity_components.begin(), entity > top_entity ? entity_components.end() : ip, top_entity);
+					// Locate the TOP entity's entry relative to the removed
+					// entity's entry (both keyed by id in entity_components):
+					// if top < entity its entry is left of ip -> search
+					// [begin, ip); if top > entity it is right of ip -> search
+					// [ip, end). WARNING: the original expression chose the
+					// end bound as `entity > top ? end : ip`, which collapses
+					// the entity < top case to the EMPTY range [ip, ip) - the
+					// top entry was never found, swap bookkeeping drifted from
+					// the pools, and a later get()/filter() hit a popped slot
+					// (out-of-bounds under streaming churn / id reuse).
+					auto it = iris_binary_find(entity < top_entity ? ip : entity_components.begin(), entity > top_entity ? ip : entity_components.end(), top_entity);
 					IRIS_ASSERT(it != entity_components.end() && it->second != ~(index_t)0);
 
 					index_t index = ip->second;
