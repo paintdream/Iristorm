@@ -337,12 +337,41 @@ namespace iris {
 			return root->tree;
 		}
 
+		static iris_tree_t* rebuild(std::vector<iris_tree_t*>& nodes) noexcept {
+			if (nodes.empty()) {
+				return nullptr;
+			}
+
+			for (iris_tree_t* node : nodes) {
+				std::memset(&node->links, 0, sizeof(node->links));
+			}
+
+			auto box = meta::bound(nodes[0]->key);
+			for (iris_tree_t* node : nodes) {
+				meta::merge(box, node->key);
+			}
+
+			std::vector<tree_code_t> codes;
+			codes.reserve(nodes.size());
+			for (iris_tree_t* node : nodes) {
+				codes.emplace_back(tree_code_t(node, meta::encode(box, node->key)));
+			}
+
+			std::sort(codes.begin(), codes.end());
+
+			iris_tree_t* root = codes[codes.size() / 2].tree;
+			root->key_index = 0;
+			build(root, &codes[0], &codes[codes.size() / 2], 1);
+			build(root, &codes[codes.size() / 2] + 1, &codes[0] + codes.size(), 1);
+			return root;
+		}
+
 	protected:
 		void set_parent(iris_tree_t* t) noexcept {
 			parent_node = t;
 		}
 
-		void build(iris_tree_t* root, tree_code_t* begin, tree_code_t* end, index_t index) {
+		static void build(iris_tree_t* root, tree_code_t* begin, tree_code_t* end, index_t index) {
 			if (begin < end) {
 				tree_code_t* mid = begin + (end - begin) / 2;
 				mid->tree->key_index = index;

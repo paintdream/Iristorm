@@ -77,6 +77,28 @@ SOFTWARE.
 #define IRIS_PROFILE_POP()
 #endif
 
+// Coroutine fiber profiling hooks (invoked by iris_coroutine.h). Profiler-
+// agnostic: iris never names a concrete profiler. The host engine overrides
+// these to map onto its profiler's fiber API (e.g. Tracy fibers under
+// TRACY_ENABLE + TRACY_FIBERS). The defaults are empty (resume/destroy are
+// called explicitly at the call sites), so upstream iris builds standalone with
+// no profiler dependency.
+//
+//   IRIS_PROFILE_COROUTINE_CURRENT()                  -> current fiber name
+//   IRIS_PROFILE_COROUTINE_RESUME(coro, fiber)        -> before coro.resume()
+//   IRIS_PROFILE_COROUTINE_DESTROY(coro, fiber)       -> before coro.destroy()
+#ifndef IRIS_PROFILE_COROUTINE_CURRENT
+#define IRIS_PROFILE_COROUTINE_CURRENT() (static_cast<const char*>(nullptr))
+#endif
+
+#ifndef IRIS_PROFILE_COROUTINE_RESUME
+#define IRIS_PROFILE_COROUTINE_RESUME(coro, fiber) do { (void)(coro); (void)(fiber); } while (0)
+#endif
+
+#ifndef IRIS_PROFILE_COROUTINE_DESTROY
+#define IRIS_PROFILE_COROUTINE_DESTROY(coro, fiber) do { (void)(coro); (void)(fiber); } while (0)
+#endif
+
 #ifndef IRIS_SHARED_LIBRARY_INTERFACE
 #define IRIS_SHARED_LIBRARY_INTERFACE
 #endif

@@ -145,6 +145,10 @@ struct example_t : example_base_t {
 		lua.set_current<&example_t::const_value>("const_value");
 		lua.set_current<&example_t::accum_value>("accum_value");
 		lua.set_current<&example_t::join_value>("join_value");
+		lua.set_current<&example_t::join_value_by_value>("join_value_by_value");
+		lua.set_current<&example_t::join_value_by_const_value>("join_value_by_const_value");
+		lua.set_current<&example_t::join_value_by_const_ref>("join_value_by_const_ref");
+		lua.set_current<&example_t::join_value_by_rvalue_ref>("join_value_by_rvalue_ref");
 		lua.set_current<&example_t::join_value_required>("join_value_required");
 		lua.set_current<&example_t::join_value_refptr>("join_value_refptr");
 		lua.set_current<&example_t::join_value_required_refptr>("join_value_required_refptr");
@@ -258,6 +262,24 @@ struct example_t : example_base_t {
 		if (rhs != nullptr) {
 			value += rhs->value;
 		}
+	}
+
+	// verify cast_arg_type_t handles registered types uniformly across every
+	// parameter form: by value, const by value, const reference, and rvalue ref.
+	void join_value_by_value(example_t rhs) noexcept {
+		value += rhs.value;
+	}
+
+	void join_value_by_const_value(const example_t rhs) noexcept {
+		value += rhs.value;
+	}
+
+	void join_value_by_const_ref(const example_t& rhs) noexcept {
+		value += rhs.value;
+	}
+
+	void join_value_by_rvalue_ref(example_t&& rhs) noexcept {
+		value += rhs.value;
 	}
 
 	static lua_t::native_variadic_t var(lua_t lua, lua_t::native_variadic_t&& params) {
@@ -827,6 +849,10 @@ static void test_bindings(lua_t lua) {
 		end\n\
 		b:join_value(a)\n\
 		b:join_value_refptr(a)\n\
+		b:join_value_by_value(a)\n\
+		b:join_value_by_const_value(a)\n\
+		b:join_value_by_const_ref(a)\n\
+		b:join_value_by_rvalue_ref(a)\n\
 		local p = a:call(function (v) return v + 1 end, 1)\n\
 		print(p) \n\
 		print(a:get_value())\n\

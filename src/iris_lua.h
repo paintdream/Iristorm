@@ -2212,8 +2212,18 @@ namespace iris {
 			}
 		}
 
+		// A registered (lua_registar) type is a reference-managed object, so it can never
+		// be materialised by value through the default lua_fromstack. Resolve it according to
+		// how the C++ parameter was declared so that every form binds cleanly:
+		//   - by value / const by value  (type_t value / const type_t value)  -> moved by value
+		//   - rvalue ref                 (type_t&& value / const type_t&&)     -> moved by value (take)
+		//   - lvalue ref / const ref     (type_t& / const type_t& value)      -> lvalue reference
+		// Non-registrar types keep their existing by-value conversion (e.g. const int& -> int).
 		template <typename type_t>
-		using cast_arg_type_t = std::conditional_t<has_lua_registar<remove_cvref_t<type_t>>::value && !std::is_const_v<std::remove_reference_t<type_t>>, remove_cvref_t<type_t>&, remove_cvref_t<type_t>>;
+		using cast_arg_type_t = std::conditional_t<
+			has_lua_registar<remove_cvref_t<type_t>>::value && !std::is_const_v<std::remove_reference_t<type_t>>,
+			std::conditional_t<std::is_lvalue_reference_v<type_t>, remove_cvref_t<type_t>&, remove_cvref_t<type_t>>,
+			remove_cvref_t<type_t>>;
 		
 		// wrap a member function with normal function
 		template <auto method, typename return_t, typename type_t, typename... args_t>
@@ -2924,6 +2934,11 @@ namespace iris {
 				// returning existing reference from internal storage
 				// must check before calling this
 				return *get_variable<std::remove_reference_t<type_t>*>(L, index);
+			} else if constexpr (has_lua_registar<value_t>::value) {
+				// registered types are reference-managed objects with no lua_fromstack;
+				// when one is requested by value, move it out of the referenced object so
+				// that only a move constructor is required (not a copy constructor)
+				return std::move(*get_variable<value_t*>(L, index));
 			} else {
 				// by default, force iris_lua_traits_t
 				return iris_lua_traits_t<value_t>::type::lua_fromstack(iris_lua_t(L), index);

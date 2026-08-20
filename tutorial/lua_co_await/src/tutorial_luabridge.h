@@ -3,16 +3,16 @@
 // 2026
 //
 // Cross-Lua-VM tutorial: how to create an independent Lua VM ("bridge") and
-// move values between VMs (see docs/05-framework-patterns.md §6; full-scale:
+// move values between VMs (see docs/05-framework-patterns.md section 6; full-scale:
 // paintsnownext plugin/luabridge). Steps:
-//   1. create_bridge        — a second, fully independent lua_State
-//   2. transfer_simple_values — numbers/strings copied, tables deep-copied
-//   3. transfer_functions   — C closures (upvalues copied) and Lua chunks
+//   1. create_bridge        - a second, fully independent lua_State
+//   2. transfer_simple_values - numbers/strings copied, tables deep-copied
+//   3. transfer_functions   - C closures (upvalues copied) and Lua chunks
 //      (bytecode dumped + reloaded, _ENV remapped to the target globals)
-//   4. transfer_objects     — types are per-VM; views share C++ memory,
+//   4. transfer_objects     - types are per-VM; views share C++ memory,
 //      placement objects are move/copy-constructed into the target
-//   5. transfer_cycle_tables — self-referencing tables survive (cycle map)
-//   6. close_bridge         — teardown in the reverse order
+//   5. transfer_cycle_tables - self-referencing tables survive (cycle map)
+//   6. close_bridge         - teardown in the reverse order
 
 #pragma once
 

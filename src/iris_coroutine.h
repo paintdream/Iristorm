@@ -33,6 +33,13 @@ SOFTWARE.
 
 // C++20 coroutine support
 #include <coroutine>
+#include <vector>
+
+// Coroutine fiber profiling is profiler-agnostic: iris only invokes the
+// IRIS_PROFILE_COROUTINE_* hooks (defined in iris_common.h), which the host
+// engine overrides with its profiler's fiber machinery. There is no profiler
+// include here, so upstream iris builds standalone without a profiler
+// dependency.
 
 namespace iris {
 	// standard coroutine interface settings
@@ -71,6 +78,28 @@ namespace iris {
 		};
 	}
 
+	// Coroutine fiber profiling.
+	//
+	// This engine's coroutines resume on arbitrary thread-pool/warp threads, so
+	// a plain per-thread profiling zone inside a coroutine body would begin on
+	// one OS thread and end on another - a per-thread profiler would then pop
+	// the wrong stack and fail the capture. Fiber-based profiling (e.g. Tracy
+	// fibers) gives every NAMED coroutine its own timeline lane + zone stack,
+	// keyed by the fiber name regardless of which OS thread executes each
+	// resume.
+	//
+	// iris is profiler-agnostic: it only invokes the IRIS_PROFILE_COROUTINE_*
+	// hooks (see iris_common.h) around every resume/suspension point and keeps
+	// the fiber name on the promise/awaitables (named()). The concrete profiler
+	// machinery (per-thread fiber stack, current(), an enter/leave RAII guard)
+	// lives in the host engine, which overrides those hooks - e.g. PaintsNow
+	// maps them onto Tracy fibers. Call sites look like:
+	//
+	//     IRIS_PROFILE_COROUTINE_RESUME(handle, fiberName);
+	//     handle.resume();
+	//
+	// where the hook brackets the resume within the enclosing scope.
+
 	// uniform coroutine class with a return type specified
 	//
 	// Lifetime contract for completion / co_await chaining:
@@ -97,6 +126,9 @@ namespace iris {
 		using return_type_t = return_t;
 
 		struct promise_type : impl::promise_type_base<return_t, function_t> {
+			// Coroutine fiber name (see named()); nullptr = no fiber tracking.
+			const char* fiberName = nullptr;
+
 			iris_coroutine_t get_return_object() noexcept {
 				return iris_coroutine_t(std::coroutine_handle<promise_type>::from_promise(*this));
 			}
@@ -154,11 +186,23 @@ namespace iris {
 			});
 		}
 
+		// Fiber name for this coroutine (must be a stable string literal,
+		// e.g. "Class::Method"). A named coroutine is entered/left as a profiler
+		// fiber around every resume (see IRIS_PROFILE_COROUTINE), so zones inside
+		// its body are attributed to its own fiber lane and may safely span
+		// co_await. Unnamed coroutines emit no fiber events.
+		iris_coroutine_t& named(const char* name) noexcept {
+			IRIS_ASSERT(handle);
+			handle.promise().fiberName = name;
+			return *this;
+		}
+
 		// run coroutine intermediately
 		void run() noexcept(noexcept(std::declval<std::coroutine_handle<promise_type>>().resume())) {
 			IRIS_ASSERT(handle);
 			std::coroutine_handle<promise_type> execute_handle(std::move(handle));
 			handle = std::coroutine_handle<promise_type>();
+			IRIS_PROFILE_COROUTINE_RESUME(execute_handle, execute_handle.promise().fiberName);
 			execute_handle.resume();
 		}
 
@@ -169,14 +213,27 @@ namespace iris {
 
 		// chain execution
 		void await_suspend(std::coroutine_handle<> parent_handle) {
+			// Fiber of the PARENT coroutine: the completion callback below
+			// resumes the parent from inside THIS coroutine's completion (a
+			// nested resume), so it must switch to the parent's fiber lane for
+			// the duration of that resume and switch back afterwards.
+			const char* parentFiber = IRIS_PROFILE_COROUTINE_CURRENT();
 			if constexpr (!std::is_void_v<return_t>) {
-				complete([this, parent_handle = std::move(parent_handle)](void*, return_t&& value) mutable noexcept(noexcept(std::declval<std::coroutine_handle<>>().resume())) {
+				complete([this, parent_handle = std::move(parent_handle), parentFiber](void*, return_t&& value) mutable noexcept(noexcept(std::declval<std::coroutine_handle<>>().resume())) {
 					await_result = &value;
-					parent_handle.resume();
+					// Locals (not the enclosing captures): MSVC cannot reference
+					// an enclosing lambda's captures from a nested lambda.
+					std::coroutine_handle<> handle = parent_handle;
+					const char* fiber = parentFiber;
+					IRIS_PROFILE_COROUTINE_RESUME(handle, fiber);
+					handle.resume();
 				});
 			} else {
-				complete([this, parent_handle = std::move(parent_handle)](void*) mutable noexcept(noexcept(std::declval<std::coroutine_handle<>>().resume())) {
-					parent_handle.resume();
+				complete([this, parent_handle = std::move(parent_handle), parentFiber](void*) mutable noexcept(noexcept(std::declval<std::coroutine_handle<>>().resume())) {
+					std::coroutine_handle<> handle = parent_handle;
+					const char* fiber = parentFiber;
+					IRIS_PROFILE_COROUTINE_RESUME(handle, fiber);
+					handle.resume();
 				});
 			}
 
@@ -216,7 +273,6 @@ namespace iris {
 		std::coroutine_handle<promise_type> handle;
 		return_t* await_result = nullptr;
 	};
-
 	// awaitable object, can be used by:
 	// co_await iris_awaitable_t(...);
 	template <typename warp_type_t, typename func_type_t>
@@ -269,6 +325,10 @@ namespace iris {
 				return false;
 			}
 
+			// Fiber of the coroutine that will resume on completion
+			// (captured from the awaiting coroutine's context).
+			fiberName = IRIS_PROFILE_COROUTINE_CURRENT();
+
 			caller = warp_t::get_current();
 
 			// the same warp, execute at once!
@@ -282,7 +342,9 @@ namespace iris {
 
 				status.fetch_or(status_mask_completed, std::memory_order_release);
 				if (resume_handle != std::coroutine_handle()) {
-					std::exchange(resume_handle, std::coroutine_handle()).resume();
+					auto handle = std::exchange(resume_handle, std::coroutine_handle());
+					IRIS_PROFILE_COROUTINE_RESUME(handle, fiberName);
+					handle.resume();
 				}
 			} else {
 				if (target == nullptr) {
@@ -346,6 +408,9 @@ namespace iris {
 		}
 
 		void await_suspend(std::coroutine_handle<> handle) {
+			// Fiber of the awaiting coroutine: the eventual resume (in
+			// resume_one, from a worker/warp task) re-enters this fiber.
+			fiberName = IRIS_PROFILE_COROUTINE_CURRENT();
 			resume_handle = std::move(handle);
 
 			if (status.fetch_or(status_mask_waited, std::memory_order_release) & status_mask_completed) {
@@ -363,21 +428,31 @@ namespace iris {
 
 	protected:
 		void resume_one() {
-			IRIS_ASSERT(resume_handle != std::coroutine_handle());
+			IRIS_ASSERT(resume_handle != std::coroutine_handle<>());
+
+			const char* fiber = fiberName;
 
 			// return to caller's warp
 			if (caller != nullptr) {
 				// notice that the condition `caller != target` holds
 				// so we can use `post` to skip self-queueing check
-				caller->queue_routine_post([handle = std::exchange(resume_handle, std::coroutine_handle())]() mutable noexcept(noexcept(resume_handle.resume())) {
-					handle.resume();
+				caller->queue_routine_post([handle = std::exchange(resume_handle, std::coroutine_handle()), fiber]() mutable noexcept(noexcept(resume_handle.resume())) {
+					// Locals (not the enclosing captures): MSVC cannot reference
+					// an enclosing lambda's captures from a nested lambda.
+					auto h = handle;
+					const char* f = fiber;
+					IRIS_PROFILE_COROUTINE_RESUME(h, f);
+					h.resume();
 				});
 			} else {
 				// otherwise dispatch to thread pool
 				// notice that we mustn't call handle.resume() directly
 				// since it may blocks execution of current warp
-				target->get_async_worker().queue([handle = std::exchange(resume_handle, std::coroutine_handle())]() mutable noexcept(noexcept(resume_handle.resume())) {
-					handle.resume();
+				target->get_async_worker().queue([handle = std::exchange(resume_handle, std::coroutine_handle()), fiber]() mutable noexcept(noexcept(resume_handle.resume())) {
+					auto h = handle;
+					const char* f = fiber;
+					IRIS_PROFILE_COROUTINE_RESUME(h, f);
+					h.resume();
 				});
 			}
 		}
@@ -389,6 +464,7 @@ namespace iris {
 		size_t parallel_priority;
 		func_t func;
 		std::coroutine_handle<> resume_handle;
+		const char* fiberName = nullptr;
 		std::conditional_t<std::is_void_v<return_t>, void_t, return_t> ret;
 	};
 
@@ -423,14 +499,18 @@ namespace iris {
 		}
 
 		void handler(std::coroutine_handle<>&& handle) {
+			const char* fiber = fiberName;
+
 			// 1-1 mapping, just resume directly
 			if (other == nullptr) {
+				IRIS_PROFILE_COROUTINE_RESUME(handle, fiber);
 				handle.resume();
 				return;
 			} else if (parallel_other) {
 				other->suspend();
 				typename warp_t::suspend_guard_t guard(other);
 				if (!other->running()) {
+					IRIS_PROFILE_COROUTINE_RESUME(handle, fiber);
 					handle.resume();
 					return;
 				}
@@ -439,6 +519,7 @@ namespace iris {
 				typename warp_t::preempt_guard_t guard(*other, 0);
 				if (guard) {
 					// success, go resume directly
+					IRIS_PROFILE_COROUTINE_RESUME(handle, fiber);
 					handle.resume();
 					return;
 				}
@@ -460,6 +541,9 @@ namespace iris {
 		}
 
 		void await_suspend(std::coroutine_handle<> handle) {
+			// Fiber of the switching coroutine: handler() may resume it
+			// from a worker/warp task later.
+			fiberName = IRIS_PROFILE_COROUTINE_CURRENT();
 			if (target == nullptr) {
 				std::swap(other, target);
 			}
@@ -495,6 +579,7 @@ namespace iris {
 		warp_t* other;
 		bool parallel_target;
 		bool parallel_other;
+		const char* fiberName = nullptr;
 	};
 
 	template <typename warp_t>
@@ -531,6 +616,9 @@ namespace iris {
 		}
 
 		void await_suspend(std::coroutine_handle<> handle) {
+			// Fiber of the selecting coroutine: the winning warp task
+			// resumes it later.
+			fiberName = IRIS_PROFILE_COROUTINE_CURRENT();
 			// all warps are busy, so we need to post tasks to them
 			auto shared_handle = std::make_shared<std::pair<std::atomic<std::coroutine_handle<>>, iris_select_t*>>(std::move(handle), this);
 			for (iterator_t p = begin; p != end; ++p) {
@@ -541,6 +629,7 @@ namespace iris {
 					auto handle = shared_handle->first.exchange(std::coroutine_handle<>(), std::memory_order_release);
 					if (handle) {
 						shared_handle->second->selected = target;
+						IRIS_PROFILE_COROUTINE_RESUME(handle, shared_handle->second->fiberName);
 						handle.resume();
 					}
 				});
@@ -559,6 +648,7 @@ namespace iris {
 		warp_t* selected;
 		iterator_t begin;
 		iterator_t end;
+		const char* fiberName = nullptr;
 	};
 
 	template <typename iterator_t>
@@ -581,29 +671,43 @@ namespace iris {
 		struct info_base_warp_t {
 			std::coroutine_handle<> handle;
 			warp_t* warp = nullptr;
+			const char* fiberName = nullptr;
 		};
 
 		struct info_base_t {
 			std::coroutine_handle<> handle;
+			const char* fiberName = nullptr;
 		};
 
 		using info_t = std::conditional_t<std::is_same_v<warp_t, void>, info_base_t, info_base_warp_t>;
 
 		// dispatch coroutine based on warp status
 		void dispatch(info_t&& info) {
+			const char* fiber = info.fiberName;
 			if constexpr (std::is_same_v<warp_t, void>) {
-				async_worker.queue([handle = std::move(info.handle)]() mutable noexcept(noexcept(info.handle.resume())) {
-					handle.resume();
+				async_worker.queue([handle = std::move(info.handle), fiber]() mutable noexcept(noexcept(info.handle.resume())) {
+					// Locals (not the enclosing captures): MSVC cannot reference
+					// an enclosing lambda's captures from a nested lambda.
+					auto h = handle;
+					const char* f = fiber;
+					IRIS_PROFILE_COROUTINE_RESUME(h, f);
+					h.resume();
 				});
 			} else {
 				warp_t* target = info.warp;
 				if (target == nullptr) {
-					async_worker.queue([handle = std::move(info.handle)]() mutable noexcept(noexcept(info.handle.resume())) {
-						handle.resume();
+					async_worker.queue([handle = std::move(info.handle), fiber]() mutable noexcept(noexcept(info.handle.resume())) {
+						auto h = handle;
+						const char* f = fiber;
+						IRIS_PROFILE_COROUTINE_RESUME(h, f);
+						h.resume();
 					});
 				} else {
-					target->queue_routine_post([handle = std::move(info.handle)]() mutable noexcept(noexcept(info.handle.resume())) {
-						handle.resume();
+					target->queue_routine_post([handle = std::move(info.handle), fiber]() mutable noexcept(noexcept(info.handle.resume())) {
+						auto h = handle;
+						const char* f = fiber;
+						IRIS_PROFILE_COROUTINE_RESUME(h, f);
+						h.resume();
 					});
 				}
 			}
@@ -630,6 +734,7 @@ namespace iris {
 			if constexpr (!std::is_same_v<warp_t, void>) {
 				info.warp = warp_t::get_current();
 			}
+			info.fiberName = IRIS_PROFILE_COROUTINE_CURRENT();
 
 			// already signaled?
 			if (signaled.load(std::memory_order_acquire) == 0) {
@@ -699,6 +804,7 @@ namespace iris {
 			if constexpr (!std::is_same_v<warp_t, void>) {
 				info.warp = warp_t::get_current();
 			}
+			info.fiberName = IRIS_PROFILE_COROUTINE_CURRENT();
 
 			// fast path
 			if (flush_prepared()) {
@@ -969,6 +1075,7 @@ namespace iris {
 			}
 
 			info.warp = warp;
+			info.fiberName = IRIS_PROFILE_COROUTINE_CURRENT();
 			routine = dispatcher.allocate(warp, [this](const async_dispatcher_t::routine_handle_t& routine) {
 				iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(info));
 			});

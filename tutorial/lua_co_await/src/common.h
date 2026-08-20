@@ -33,7 +33,7 @@ SOFTWARE.
 #include <iris_lua.h>
 
 namespace iris {
-	// Type-alias layer (see docs/05-framework-patterns.md §1; a full-scale
+	// Type-alias layer (see docs/05-framework-patterns.md section 1; a full-scale
 	// version is paintsnownext's src/PaintsNow.h).
 	using async_worker_t = iris_async_worker_t<>;
 	using warp_t = iris_warp_t<iris_async_worker_t<>>;

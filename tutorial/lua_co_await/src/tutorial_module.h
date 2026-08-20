@@ -2,7 +2,7 @@
 // PaintDream (paintdream@paintdream.com)
 // 2026
 //
-// Module/type-registry pattern (see docs/05-framework-patterns.md §4):
+// Module/type-registry pattern (see docs/05-framework-patterns.md section 4):
 // a module class exposes a Types() table of its registered sub-types, so
 // scripts construct plugin types without compile-time C++ dependencies
 // (paintsnownext: ModuleObject::Types()).

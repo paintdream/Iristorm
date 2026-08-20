@@ -3,7 +3,7 @@
 // 2026
 //
 // Minimal Object with a method reentrancy guard (see
-// docs/05-framework-patterns.md §2; full-scale: paintsnownext src/Object.h).
+// docs/05-framework-patterns.md section 2; full-scale: paintsnownext src/Object.h).
 //
 // The binding layer detects the static lua_method_begin/lua_method_end
 // templates on the class (has_lua_method_begin trait) and wraps EVERY bound
