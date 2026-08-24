@@ -95,6 +95,89 @@ size_t linear_search(const sample_tree* root, std::vector<sample_tree>& nodes, c
 	return count;
 }
 
+// Degenerate (all-equal key) detach->re-key->reattach stress. This reproduces
+// the engine's TransformSystem::SyncNodeSystem flow, which detaches a dirty
+// node, re-keys its AABB in place, and reattaches it. The historical bug was
+// using detach()'s return value as "the parent to reattach to": detach() only
+// returns a non-null replacement root when the DETACHED node was the root, so
+// a non-root node was detached and never reattached - it silently dropped out
+// of the tree. The correct flow captures the tree root BEFORE detach, then
+// reattaches to it. This test drives equal-key (degenerate) and distinct-key
+// nodes through that flow and checks every node stays reachable and the query
+// result still matches a brute-force linear scan.
+struct always_true_select {
+	explicit always_true_select(sample_tree::base*) noexcept {}
+	bool operator () (sample_tree::base*, sample_tree::base*) noexcept { return true; }
+};
+
+struct ptr_cmp_select {
+	sample_tree::base* self;
+	explicit ptr_cmp_select(sample_tree::base* s) noexcept : self(s) {}
+	bool operator () (sample_tree::base* left, sample_tree::base*) noexcept { return left < self; }
+};
+
+template <typename selector_factory_t>
+static bool run_detach_reattach_case(size_t count, bool degenerate) {
+	std::vector<sample_tree> nodes(count);
+	for (size_t i = 0; i < count; i++) {
+		if (degenerate) {
+			nodes[i] = sample_tree(build_box(float3(0, 0, 0), float3(0, 0, 0)), i % 6);
+		} else {
+			nodes[i] = sample_tree(build_box(float3((float)i, (float)i, (float)i), float3((float)i + 1, (float)i + 1, (float)i + 1)), i % 6);
+		}
+	}
+
+	sample_tree* root = &nodes[0];
+	for (size_t j = 1; j < count; j++) {
+		nodes[j].attach(root);
+	}
+
+	// Detach -> re-key -> reattach, node by node, exactly like SyncNodeSystem.
+	for (size_t k = 1; k < count; k++) {
+		sample_tree* to_detach = &nodes[k];
+
+		// capture the tree root BEFORE detach
+		sample_tree* tree_root = to_detach;
+		while (tree_root->get_parent() != nullptr) {
+			tree_root = static_cast<sample_tree*>(tree_root->get_parent());
+		}
+
+		selector_factory_t factory(to_detach);
+		sample_tree* new_root = static_cast<sample_tree*>(to_detach->detach(factory));
+		if (new_root != nullptr) {
+			tree_root = new_root; // detached node was the root; tree root moved
+			root = new_root;
+		}
+
+		// re-key in place (no-op here) and reattach to the captured root
+		if (tree_root != to_detach) {
+			to_detach->attach(tree_root);
+		}
+	}
+
+	// every node must remain reachable from the root
+	queryer q;
+	q.bounding = build_box(float3(-1e9f, -1e9f, -1e9f), float3(1e9f, 1e9f, 1e9f));
+	root->query<true>(q.bounding, q);
+	if (q.count != count) {
+		printf("degenerate detach/reattach: only %zu/%zu nodes reachable (lost nodes)\n", q.count, count);
+		return false;
+	}
+
+	// query correctness vs linear scan
+	for (size_t n = 0; n < 20; n++) {
+		box b = build_box_randomly();
+		size_t got = fast_query(root, b);
+		size_t expected = linear_search(root, nodes, b);
+		if (got != expected) {
+			printf("degenerate detach/reattach: query %zu != linear %zu\n", got, expected);
+			return false;
+		}
+	}
+
+	return true;
+}
+
 int main(void) {
 	static constexpr size_t length = 10;
 	std::vector<sample_tree> nodes(length * 4096);
@@ -146,6 +229,19 @@ int main(void) {
 		root = static_cast<sample_tree*>(root->optimize());
 	}
 
+	// Degenerate (equal-key) and distinct-key detach->re-key->reattach cases,
+	// using the two selector strategies the engine actually uses
+	// (NodeSystem::Detach = always-true; SyncNodeSystem = pointer compare).
+	if (!run_detach_reattach_case<always_true_select>(10, true)) return -1;
+	if (!run_detach_reattach_case<ptr_cmp_select>(10, true)) return -1;
+	if (!run_detach_reattach_case<always_true_select>(100, true)) return -1;
+	if (!run_detach_reattach_case<ptr_cmp_select>(100, true)) return -1;
+	if (!run_detach_reattach_case<always_true_select>(10, false)) return -1;
+	if (!run_detach_reattach_case<ptr_cmp_select>(10, false)) return -1;
+	if (!run_detach_reattach_case<always_true_select>(100, false)) return -1;
+	if (!run_detach_reattach_case<ptr_cmp_select>(100, false)) return -1;
+
+	printf("degenerate detach/reattach: all cases passed\n");
 	return 0;
 }
 
