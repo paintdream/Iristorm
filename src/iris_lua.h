@@ -61,6 +61,12 @@ extern "C" {
 #define lua_newuserdatauv(L, size, uv) lua_newuserdata(L, size)
 #endif
 
+#ifndef IRIS_LUA_ENABLE_YIELDK
+#if LUA_VERSION_NUM >= 502
+#define IRIS_LUA_ENABLE_YIELDK 1
+#endif
+#endif
+
 #ifndef IRIS_LUA_LOGERROR
 #define IRIS_LUA_LOGERROR(...) std::invoke(fprintf, stderr, __VA_ARGS__)
 #endif
@@ -3206,7 +3212,7 @@ namespace iris {
 								push_variable(L, std::move(value.value()));
 							} else {
 								// error!
-#if LUA_ENABLE_YIELDK
+#if IRIS_LUA_ENABLE_YIELDK
 								push_variable(L, std::move(value.message));
 								context = reinterpret_cast<char*>(L) + 1;
 #else
@@ -3289,7 +3295,7 @@ namespace iris {
 			coroutine_cleanup(L, address);
 		}
 
-#if LUA_ENABLE_YIELDK
+#if IRIS_LUA_ENABLE_YIELDK
 		static int function_coroutine_continuation(lua_State* L, int status, lua_KContext context) {
 			IRIS_ASSERT(status == LUA_YIELD);
 			// detect error
@@ -3343,7 +3349,7 @@ namespace iris {
 					return lua_error(L);
 				} else {
 					// coroutine_state_yield
-#if LUA_ENABLE_YIELDK
+#if IRIS_LUA_ENABLE_YIELDK
 					// after Lua 5.3, we can throw errors on C-coroutine via lua_yieldk directly
 					// so it can be captured within current pcall() context
 					return IRIS_LUA_YIELDK(L, 0, lua_gettop(L), &iris_lua_t::function_coroutine_continuation);
