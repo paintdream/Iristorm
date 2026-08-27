@@ -62,8 +62,10 @@ extern "C" {
 #endif
 
 #ifndef IRIS_LUA_ENABLE_YIELDK
-#if LUA_VERSION_NUM >= 502
+#if LUA_VERSION_NUM >= 503
 #define IRIS_LUA_ENABLE_YIELDK 1
+#else
+#define IRIS_LUA_ENABLE_YIELDK 0
 #endif
 #endif
 
