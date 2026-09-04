@@ -30,6 +30,7 @@ static void run_tests() {
 	stack_op<strand>();
 	not_pow_two<strand>();
 	framed_data<strand>();
+	spsc_stream<strand>();
 	simple_explosion<strand>();
 	garbage_collection<strand>();
 	acquire_release<strand>();
@@ -183,6 +184,42 @@ void framed_data() {
 			}
 		}
 	}
+}
+
+template <bool strand>
+void spsc_stream() {
+	printf("[[ demo for iris dispatcher : spsc_stream ]]\n");
+
+	// single producer single consumer pipeline with streaming bulk push:
+	// the producer promises never to read the pushed data back, so large
+	// trivially-copyable runs go through NT stores (see iris_queue_t::push_stream)
+	iris_queue_list_t<uint8_t> pipe;
+
+	std::thread consumer([&]() {
+		uint8_t sink[4096];
+		size_t got = 0;
+		while (got < 4096 * 32) {
+			const uint8_t* r = pipe.pop(sink, sink + sizeof(sink));
+			const size_t m = static_cast<size_t>(r - sink);
+			if (m == 0) continue;
+			IRIS_ASSERT(sink[0] == static_cast<uint8_t>(got / 4096));
+			got += m;
+		}
+	});
+
+	for (size_t i = 0; i < 32; i++) {
+		uint8_t chunk[4096];
+		memset(chunk, static_cast<int>(i), sizeof(chunk));
+		const uint8_t* from = chunk;
+		const uint8_t* end = chunk + sizeof(chunk);
+		const uint8_t* p = from;
+		while (p != end) {
+			p = pipe.push_stream(p, end);
+		}
+	}
+
+	consumer.join();
+	IRIS_ASSERT(pipe.empty());
 }
 
 template <bool strand>

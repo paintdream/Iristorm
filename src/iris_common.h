@@ -61,6 +61,16 @@ SOFTWARE.
 #define IRIS_CACHE_LINE_SIZE (64)
 #endif
 
+// non-temporal streaming stores, enabled only on x86-64 (SSE2 baseline)
+#if (defined(_M_X64) || defined(__x86_64__)) && !defined(IRIS_DISABLE_NT_STREAM)
+#define IRIS_NT_STREAM 1
+#include <immintrin.h>
+#define IRIS_SFENCE() _mm_sfence()
+#define IRIS_NT_STORE_128(dst, src) _mm_stream_si128(reinterpret_cast<__m128i*>(dst), _mm_loadu_si128(reinterpret_cast<const __m128i*>(src)))
+#else
+#define IRIS_NT_STREAM 0
+#endif
+
 #ifndef IRIS_PROFILE_THREAD
 #define IRIS_PROFILE_THREAD(name, i)
 #endif
@@ -1281,11 +1291,49 @@ namespace iris {
 	}
 
 	// basic queue structure for tasks or stream-based data structures
-	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t, bool enable_memory_fence = true, template <typename...> class _allocator_t = allocator_t>
-	struct iris_queue_t : private allocator_t<impl::element_slot_t<value_t>>, protected enable_in_out_fence_t<> {
+#if defined(__cpp_lib_concepts)
+	template <typename iterator_t>
+	struct is_contiguous_iterator_t : std::integral_constant<bool, std::contiguous_iterator<iterator_t>> {};
+#else
+	template <typename iterator_t>
+	struct is_contiguous_iterator_t : std::is_pointer<iterator_t> {};
+#endif
+
+	// spsc shadow counters, empty (EBO) when spsc optimize is off
+	template <bool enable>
+	struct iris_spsc_shadow_t {
+		explicit iris_spsc_shadow_t(size_t) noexcept {}
+		void shadow_init(size_t) noexcept {}
+		size_t push_shadow() const noexcept { return 0; }
+		size_t pop_shadow() const noexcept { return 0; }
+		void set_push_shadow(size_t) const noexcept {}
+		void set_pop_shadow(size_t) const noexcept {}
+	};
+
+	template <>
+	struct iris_spsc_shadow_t<true> {
+		alignas(IRIS_CACHE_LINE_SIZE) mutable size_t push_cached_pop; // producer-owned shadow of pop_count
+		alignas(IRIS_CACHE_LINE_SIZE) mutable size_t pop_cached_push; // consumer-owned shadow of push_count
+
+		explicit iris_spsc_shadow_t(size_t init) noexcept : push_cached_pop(init), pop_cached_push(init) {}
+		void shadow_init(size_t init) noexcept { push_cached_pop = init; pop_cached_push = init; }
+		size_t push_shadow() const noexcept { return push_cached_pop; }
+		size_t pop_shadow() const noexcept { return pop_cached_push; }
+		void set_push_shadow(size_t value) const noexcept { push_cached_pop = value; }
+		void set_pop_shadow(size_t value) const noexcept { pop_cached_push = value; }
+	};
+
+	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t, bool enable_memory_fence = true, template <typename...> class _allocator_t = allocator_t, bool enable_spsc_optimize = enable_memory_fence>
+	struct iris_queue_t
+		// spsc optimize requires the fence protocol, see the static assert below
+		: private allocator_t<impl::element_slot_t<value_t>>, protected enable_in_out_fence_t<>, protected iris_spsc_shadow_t<enable_spsc_optimize> {
 		using element_t = value_t;
 		using storage_t = impl::element_slot_t<element_t>;
 		using node_allocator_t = _allocator_t<storage_t>;
+		static constexpr bool spsc_optimized = enable_spsc_optimize;
+
+		static_assert(!enable_spsc_optimize || enable_memory_fence, "enable_spsc_optimize requires enable_memory_fence!");
+
 
 		static constexpr size_t block_size = iris_extract_block_size<element_t, _allocator_t>::value;
 		static_assert(block_size >= sizeof(element_t), "block_size is too small!");
@@ -1294,12 +1342,12 @@ namespace iris {
 		static constexpr size_t counter_limit = element_count * (size_t(1) << (sizeof(size_t) * 8 - 1 - iris_log2<element_count>::value));
 		static_assert((counter_limit & (size_t(1) << (sizeof(size_t) * 8 - 1))) != 0, "not max limit!");
 
-		explicit iris_queue_t(const node_allocator_t& alloc, size_t init_count = 0) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : node_allocator_t(alloc), push_count(init_count), pop_count(init_count), ring_buffer(node_allocator_t::allocate(element_count)) {}
+		explicit iris_queue_t(const node_allocator_t& alloc, size_t init_count = 0) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : node_allocator_t(alloc), iris_spsc_shadow_t<enable_memory_fence && enable_spsc_optimize>(init_count), push_count(init_count), pop_count(init_count), ring_buffer(node_allocator_t::allocate(element_count)) {}
 
-		explicit iris_queue_t(size_t init_count = 0) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : push_count(init_count), pop_count(init_count), ring_buffer(node_allocator_t::allocate(element_count)) {}
+		explicit iris_queue_t(size_t init_count = 0) noexcept(noexcept(std::declval<node_allocator_t>().allocate(1))) : iris_spsc_shadow_t<enable_memory_fence && enable_spsc_optimize>(init_count), push_count(init_count), pop_count(init_count), ring_buffer(node_allocator_t::allocate(element_count)) {}
 
 		iris_queue_t(const iris_queue_t& rhs) = delete;
-		iris_queue_t(iris_queue_t&& rhs) noexcept : node_allocator_t(std::move(static_cast<node_allocator_t&>(rhs))), ring_buffer(rhs.ring_buffer), push_count(rhs.push_count), pop_count(rhs.pop_count) {
+		iris_queue_t(iris_queue_t&& rhs) noexcept : node_allocator_t(std::move(static_cast<node_allocator_t&>(rhs))), iris_spsc_shadow_t<enable_memory_fence && enable_spsc_optimize>(rhs), push_count(rhs.push_count), pop_count(rhs.pop_count), ring_buffer(rhs.ring_buffer) {
 			rhs.ring_buffer = nullptr;
 		}
 
@@ -1310,6 +1358,11 @@ namespace iris {
 				std::swap(ring_buffer, rhs.ring_buffer);
 				std::swap(push_count, rhs.push_count);
 				std::swap(pop_count, rhs.pop_count);
+				// shadows follow the (swapped) counters on both sides.
+				this->set_push_shadow(push_count);
+				this->set_pop_shadow(pop_count);
+				rhs.set_push_shadow(rhs.push_count);
+				rhs.set_pop_shadow(rhs.pop_count);
 			}
 
 			return *this;
@@ -1330,8 +1383,13 @@ namespace iris {
 		element_t* push(input_element_t&& t) noexcept(noexcept(element_t(std::forward<input_element_t>(t)))) {
 			auto in_guard = in_fence();
 
-			if (full()) {
-				return nullptr; // this queue is full, push failed
+			if (maybe_full()) {
+				// shadow says "might be full": refresh it once, then exact check.
+				this->refresh_pop_cached();
+
+				if (full()) {
+					return nullptr; // this queue is full, push failed
+				}
 			}
 
 			element_t* result = new (&ring_buffer[push_count % element_count]) element_t(std::forward<input_element_t>(t));
@@ -1400,6 +1458,101 @@ namespace iris {
 			if /* constexpr */ (enable_memory_fence) {
 				std::atomic_thread_fence(std::memory_order_release);
 			}
+
+			push_count = step_counter(push_count, from - org);
+			return from;
+		}
+
+		static constexpr size_t stream_min_bytes = 512;
+
+		// copy slots [wbegin, wend) from `from` (bounded by `to`), large runs go
+		// through NT stores; returns the iterator after the last element.
+		template <typename iterator_t>
+		iterator_t stream_fill(iterator_t from, iterator_t to, size_t wbegin, size_t wend, bool& streamed) {
+			size_t i = wbegin;
+			const size_t n = std::min(static_cast<size_t>(std::distance(from, to)), wend - i);
+
+#if IRIS_NT_STREAM
+			// trivially copyable = raw bytes: the 16B-aligned middle of the run
+			// is written with NT stores and never allocates in producer caches.
+			if /* constexpr */ (spsc_optimized && std::is_trivially_copyable<element_t>::value && is_contiguous_iterator_t<iterator_t>::value) {
+				const size_t bytes = n * sizeof(element_t);
+				if (bytes >= stream_min_bytes) {
+					uint8_t* dst = reinterpret_cast<uint8_t*>(&ring_buffer[i]);
+					const uint8_t* src = reinterpret_cast<const uint8_t*>(&*from);
+					size_t done = 0;
+					const size_t head = std::min<size_t>((sizeof(__m128i) - (reinterpret_cast<uintptr_t>(dst) & (sizeof(__m128i) - 1))) & (sizeof(__m128i) - 1), bytes);
+					if (head != 0) {
+						std::memcpy(dst, src, head);
+						done = head;
+					}
+
+					const size_t vecn = (bytes - done) & ~(sizeof(__m128i) - 1);
+					for (size_t off = 0; off < vecn; off += sizeof(__m128i)) {
+						IRIS_NT_STORE_128(dst + done + off, src + done + off);
+					}
+					done += vecn;
+
+					if (done < bytes) {
+						std::memcpy(dst + done, src + done, bytes - done);
+					}
+
+					streamed = true;
+					std::advance(from, static_cast<ptrdiff_t>(n));
+					return from;
+				}
+			}
+#endif
+
+			const size_t wend_clamped = i + n;
+			while (i < wend_clamped) {
+				new (&ring_buffer[i++]) element_t(*from++);
+			}
+
+			return from;
+		}
+
+		// spsc streaming bulk push, the caller promises never to read these
+		// elements back on the producer side: large trivially-copyable runs go
+		// through NT stores. falls back to push(from, to) otherwise.
+		template <typename iterator_t>
+		iterator_t push_stream(iterator_t from, iterator_t to) noexcept(noexcept(element_t(*from))) {
+			auto guard = in_fence();
+			if (full()) {
+				return from;
+			}
+
+			iterator_t org = from;
+			size_t windex = push_count % element_count;
+			size_t rindex = pop_count % element_count;
+			bool streamed = false;
+
+			if (rindex <= windex) {
+				from = stream_fill(from, to, windex, element_count, streamed);
+				windex = 0;
+			}
+
+			if (from != to && windex < rindex) {
+				from = stream_fill(from, to, windex, rindex, streamed);
+			}
+
+			// non-temporal stores are weakly ordered: make them globally visible
+			// before publishing the counter, regardless of enable_memory_fence.
+#if IRIS_NT_STREAM
+			if (streamed) {
+				IRIS_SFENCE();
+			}
+#else
+			IRIS_ASSERT(!streamed);
+#endif
+
+			// place a thread_fence here to ensure that change of ring_buffer[windex]
+			//   must be visible to other threads after push_count being updated.
+			if /* constexpr */ (enable_memory_fence) {
+				std::atomic_thread_fence(std::memory_order_release);
+			}
+
+			this->set_push_shadow(pop_count); // pop_count was read exactly, keep the shadow fresh
 
 			push_count = step_counter(push_count, from - org);
 			return from;
@@ -1475,6 +1628,7 @@ namespace iris {
 			iterator_t org = from;
 			size_t windex = push_count % element_count;
 			size_t rindex = pop_count % element_count;
+			this->set_pop_shadow(push_count); // push_count was read exactly, keep the shadow fresh
 
 			if (windex <= rindex) {
 				while (from != to && rindex < element_count) {
@@ -1549,18 +1703,43 @@ namespace iris {
 			return step_counter(pop_count, (ptrdiff_t)element_count) == push_count;
 		}
 
+		// optimistic checks with the shadow counters (see iris_spsc_shadow_t):
+		// the shadow only lags behind the actual value, so a negative answer
+		// is always exact, otherwise refresh it once and do the exact check
+		bool maybe_full() const noexcept {
+			return !spsc_optimized || diff_counter(push_count, this->push_shadow()) >= static_cast<ptrdiff_t>(element_count);
+		}
+
+		bool maybe_empty() const noexcept {
+			return !spsc_optimized || diff_counter(this->pop_shadow(), pop_count) <= 0;
+		}
+
+		void refresh_pop_cached() noexcept {
+			this->set_push_shadow(pop_count);
+		}
+
+		void refresh_push_cached() const noexcept {
+			this->set_pop_shadow(push_count);
+		}
+
 		bool empty() const noexcept {
-			if /* constexpr */ (enable_memory_fence) {
-				bool result = pop_count == push_count;
-				if (!result) {
-					// not sure if it is needed, but the kfifo of linux kernel has missed it.
+			if (maybe_empty()) {
+				refresh_push_cached(); // loads push_count; no-op when the switch is off
+
+				if /* constexpr */ (enable_memory_fence) {
 					std::atomic_thread_fence(std::memory_order_acquire);
 				}
-				
-				return result;
-			} else {
+
 				return pop_count == push_count;
 			}
+
+			// shadow still ahead of pop_count: definitely not empty, and those
+			// elements were made visible to this side when the shadow was set.
+			if /* constexpr */ (enable_memory_fence) {
+				std::atomic_thread_fence(std::memory_order_acquire);
+			}
+
+			return false;
 		}
 
 		size_t size() const noexcept {
@@ -1743,6 +1922,11 @@ namespace iris {
 				std::atomic_thread_fence(std::memory_order_release);
 			}
 
+			// shadows must follow the counters: they are only sound as stale
+			// observations from BEHIND the actual value (counters move forward),
+			// and a reset moves them backward.
+			this->shadow_init(init_count);
+
 			push_count = pop_count = init_count;
 		}
 
@@ -1912,28 +2096,30 @@ namespace iris {
 		}
 
 	protected:
-		size_t push_count; // write count
-		size_t pop_count; // read count
-		storage_t* ring_buffer;
+		// spsc cache-line split: counters on separate lines so each end touches
+		// its own line, read-only ring_buffer pointer gets one more line
+		alignas(spsc_optimized ? IRIS_CACHE_LINE_SIZE : alignof(size_t)) size_t push_count; // write count (producer side)
+		alignas(spsc_optimized ? IRIS_CACHE_LINE_SIZE : alignof(size_t)) size_t pop_count; // read count (consumer side)
+		alignas(spsc_optimized ? IRIS_CACHE_LINE_SIZE : alignof(storage_t*)) storage_t* ring_buffer;
 	};
 
 	namespace impl {
-		template <typename element_t, template <typename...> class allocator_t, bool enable_memory_fence>
-		using sub_queue_t = iris_queue_t<element_t, allocator_t, enable_memory_fence>;
+		template <typename element_t, template <typename...> class allocator_t, bool enable_memory_fence, bool enable_spsc_optimize = enable_memory_fence>
+		using sub_queue_t = iris_queue_t<element_t, allocator_t, enable_memory_fence, allocator_t, enable_spsc_optimize>;
 
-		template <typename element_t, template <typename...> class allocator_t, bool enable_memory_fence, template <typename...> class debug_allocator_t = allocator_t>
-		struct node_t : sub_queue_t<element_t, debug_allocator_t, enable_memory_fence> {
+		template <typename element_t, template <typename...> class allocator_t, bool enable_memory_fence, template <typename...> class debug_allocator_t = allocator_t, bool enable_spsc_optimize = enable_memory_fence>
+		struct node_t : sub_queue_t<element_t, debug_allocator_t, enable_memory_fence, enable_spsc_optimize> {
 			template <typename alloc_rebind_t>
-			explicit node_t(const alloc_rebind_t& allocator, size_t init_count) : sub_queue_t<element_t, debug_allocator_t, enable_memory_fence>(allocator, init_count), next(nullptr) {}
+			explicit node_t(const alloc_rebind_t& allocator, size_t init_count) : sub_queue_t<element_t, debug_allocator_t, enable_memory_fence, enable_spsc_optimize>(allocator, init_count), next(nullptr) {}
 			node_t* next; // chain next queue
 		};
 	}
 
 	// chain kfifos to make variant capacity.
-	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t, bool enable_memory_fence = true, typename listener_t = void, template <typename...> class debug_allocator_t = allocator_t>
-	struct iris_queue_list_t : protected allocator_t<impl::node_t<value_t, allocator_t, enable_memory_fence>>, protected enable_in_out_fence_t<> {
+	template <typename value_t, template <typename...> class allocator_t = iris_default_block_allocator_t, bool enable_memory_fence = true, typename listener_t = void, template <typename...> class debug_allocator_t = allocator_t, bool enable_spsc_optimize = enable_memory_fence>
+	struct iris_queue_list_t : protected allocator_t<impl::node_t<value_t, allocator_t, enable_memory_fence, allocator_t, enable_spsc_optimize>>, protected enable_in_out_fence_t<> {
 		using element_t = value_t;
-		using node_t = impl::node_t<element_t, debug_allocator_t, enable_memory_fence>;
+		using node_t = impl::node_t<element_t, debug_allocator_t, enable_memory_fence, debug_allocator_t, enable_spsc_optimize>;
 		using node_allocator_t = debug_allocator_t<node_t>;
 
 		static constexpr size_t block_size = iris_extract_block_size<element_t, debug_allocator_t>::value;
@@ -1996,12 +2182,16 @@ namespace iris {
 		element_t* push(input_element_t&& t) noexcept(noexcept(std::declval<node_t>().push(std::forward<input_element_t>(t)))) {
 			auto guard = in_fence();
 
-			if (push_head->full()) {
+			// push into the current node; on full, chain a new node and retry there.
+			// (the node's push performs the optimistic SPSC check internally, so the
+			// exact cross-line full() read only happens once per capacity window.)
+			element_t* w = push_head->push(std::forward<input_element_t>(t));
+			if (w == nullptr) {
 				node_t* p = node_allocator_t::allocate(1);
 				new (p) node_t(static_cast<node_allocator_t&>(*this), iterator_counter);
 
 				iterator_counter = node_t::step_counter(iterator_counter, element_count);
-				element_t* w = p->push(std::forward<input_element_t>(t));
+				w = p->push(std::forward<input_element_t>(t));
 
 				// chain new node_t at head.
 				push_head->next = p;
@@ -2012,10 +2202,9 @@ namespace iris {
 
 				push_head = p;
 				invoke_node_insert<listener_t>(p);
-				return w;
-			} else {
-				return push_head->push(std::forward<input_element_t>(t));
 			}
+
+			return w;
 		}
 
 		template <typename iterator_t>
@@ -2030,6 +2219,35 @@ namespace iris {
 
 				iterator_counter = node_t::step_counter(iterator_counter, element_count);
 				from = p->push(from, to);
+
+				// chain new node_t at head.
+				push_head->next = p;
+
+				if (enable_memory_fence) {
+					std::atomic_thread_fence(std::memory_order_release);
+				}
+
+				push_head = p;
+				invoke_node_insert<listener_t>(p);
+			}
+
+			return from;
+		}
+
+		// SPSC streaming bulk push, see iris_queue_t::push_stream for the contract:
+		// the producer side will never read these elements back.
+		template <typename iterator_t>
+		iterator_t push_stream(iterator_t from, iterator_t to) noexcept(noexcept(std::declval<node_t>().push_stream(from, to))) {
+			auto guard = in_fence();
+			from = push_head->push_stream(from, to);
+
+			while (from != to) {
+				// full
+				node_t* p = node_allocator_t::allocate(1);
+				new (p) node_t(static_cast<node_allocator_t&>(*this), iterator_counter);
+
+				iterator_counter = node_t::step_counter(iterator_counter, element_count);
+				from = p->push_stream(from, to);
 
 				// chain new node_t at head.
 				push_head->next = p;
