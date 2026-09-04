@@ -14,6 +14,8 @@ static void not_pow_two();
 template <bool strand>
 static void framed_data();
 template <bool strand>
+static void spsc_stream();
+template <bool strand>
 static void simple_explosion();
 template <bool strand>
 static void garbage_collection();

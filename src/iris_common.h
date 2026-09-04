@@ -2361,9 +2361,9 @@ namespace iris {
 
 		bool cleanup_empty() noexcept {
 			// current queue is empty, remove it from list.
-			if (pop_head->empty() && pop_head != push_head) {
+			if (pop_head != push_head && pop_head->empty()) {
 				node_t* p = pop_head;
-				pop_head = pop_head->next;
+				pop_head = p->next;
 
 				p->~node_t();
 				invoke_node_remove<listener_t>(p);
