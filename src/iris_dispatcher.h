@@ -1182,6 +1182,20 @@ namespace iris {
 			internal_thread_count = thread_count;
 		}
 
+		// optional OS-affinity hook for core pinning (see test/iris_affinity_demo.cpp):
+		// invoked once at the very beginning of every internal thread procedure with
+		// the internal slot index in [0, internal_thread_count), so that a whole
+		// worker (one hardware placement domain: a chiplet/LLC domain, or a
+		// big.LITTLE class) can be pinned onto its core set. Pin from *inside* the
+		// thread (GetCurrentThread()/pthread_self()); attaching from the spawner
+		// races with thread startup. The handler must be installed before start()
+		// and must not throw; external threads appended via append() run user
+		// procedures and pin themselves.
+		void set_thread_pinner(std::function<void(size_t)>&& pinner) {
+			IRIS_ASSERT(task_heads.empty()); // must not started
+			thread_pinner = std::move(pinner);
+		}
+
 		// initialize and start thread poll
 		void start() {
 			IRIS_ASSERT(task_heads.empty()); // must not started
@@ -1207,6 +1221,10 @@ namespace iris {
 		}
 
 		void thread_loop(size_t i) {
+			if (thread_pinner) {
+				thread_pinner(i);
+			}
+
 			make_current(i);
 
 			while (!is_terminated()) {
@@ -1631,6 +1649,7 @@ namespace iris {
 		size_t internal_thread_count; // the count of internal thread
 		size_t priority_task_threshold;
 		std::function<bool(task_base_t*, size_t&)> priority_task_handler;
+		std::function<void(size_t)> thread_pinner; // optional core-pinning hook, invoked with the slot index at internal thread entry
 		std::atomic<size_t> terminated; // is to terminate
 
 		// --- hot, independently updated counters ---
