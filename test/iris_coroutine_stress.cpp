@@ -360,6 +360,78 @@ static void test_event_cycle() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 1b: iris_barrier_t frame lifetime - the barrier is owned by a coroutine
+// frame and that frame is destroyed by the FIRST dispatch of complete().
+//
+// complete() dispatches handles in slot order. Slot 0 is the owner here, so the
+// first resume runs the owner to co_return; final_suspend is suspend_never, so
+// the frame - and the barrier, and the handles[] vector living inside it - is
+// freed *while complete() is still looping over handles[1..N-1]*. The owner then
+// reuses the freed block with a same-sized allocation, so a loop that still
+// reads handles[] sees clobbered bytes (this reproduced "vector subscript out of
+// range" / an access violation before the snapshot fix).
+//
+// Slot order == launch order: run() executes the body up to the first co_await
+// synchronously, so the owner launched first owns slot 0.
+struct frame_garbage_t {
+	size_t payload[16];
+};
+
+static coroutine_t barrier_frame_owner(std::shared_ptr<void> keepalive,
+                                        iris_barrier_t<void, bool, worker_t>* barrier,
+                                        std::atomic<size_t>& done) {
+	co_await *barrier;
+	(void)keepalive;
+	// Reuse the just-freed frame block (this coroutine's own locals) so stale
+	// handles[] reads observe garbage rather than intact data.
+	frame_garbage_t garbage;
+	for (size_t i = 0; i < 16; i++) garbage.payload[i] = 0xDEADBEEF00000000ull + i;
+	done.fetch_add(1, std::memory_order_release);
+	// Returning here destroys the coroutine frame, which owns the barrier whose
+	// complete() is still unwinding its dispatch loop.
+}
+
+static void test_barrier_frame_lifetime() {
+	using barrier_t = iris_barrier_t<void, bool, worker_t>;
+
+	const size_t N = 8;             // participants per round
+	const size_t rounds = 500;
+
+	worker_t worker(std::max<size_t>(2, std::thread::hardware_concurrency()));
+	worker.start();
+
+	for (size_t r = 0; r < rounds; r++) {
+		std::atomic<size_t> done{ 0 };
+		{
+			auto holder = std::shared_ptr<barrier_t>(
+				new barrier_t(worker, N),
+				[](barrier_t* p) { delete p; });
+
+			// owner FIRST -> slot 0 -> dispatched first by complete()
+			barrier_frame_owner(holder, holder.get(), done).run();
+			for (size_t i = 1; i < N; i++) {
+				barrier_frame_owner(std::shared_ptr<void>(), holder.get(), done).run();
+			}
+		}
+
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+		while (done.load(std::memory_order_acquire) != N) {
+			if (std::chrono::steady_clock::now() > deadline) {
+				printf("  round %zu: only %zu/%zu resumed\n",
+					r, done.load(std::memory_order_acquire), N);
+				worker.terminate();
+				worker.join();
+				throw std::runtime_error("barrier frame lifetime stuck");
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
+
+	worker.terminate();
+	worker.join();
+}
+
+// ---------------------------------------------------------------------------
 int main() {
 	int failures = 0;
 
@@ -372,6 +444,7 @@ int main() {
 #endif
 
 	if (!run_with_timeout("barrier race",          stress_timeout, test_barrier_race))          failures++;
+	if (!run_with_timeout("barrier frame lifetime", stress_timeout, test_barrier_frame_lifetime)) failures++;
 	if (!run_with_timeout("quota lost wakeup",     stress_timeout, test_quota_lost_wakeup))     failures++;
 	if (!run_with_timeout("pipe SPSC race",        stress_timeout, test_pipe_spsc_race))        failures++;
 	if (!run_with_timeout("dispatcher::next",      short_timeout,  test_dispatcher_next_handle)) failures++;

@@ -36,6 +36,12 @@ SOFTWARE.
 #include <thread>
 #include <condition_variable>
 
+#if !defined(IRIS_NO_ATOMIC_WAIT) && defined(__cpp_lib_atomic_wait) && __cpp_lib_atomic_wait >= 201711L
+#define IRIS_ATOMIC_WAIT 1
+#else
+#define IRIS_ATOMIC_WAIT 0
+#endif
+
 namespace iris {
 	namespace impl {	
 		// for exception safe, roll back atomic operations as needed
@@ -1162,13 +1168,15 @@ namespace iris {
 		using large_task_allocator_t = allocator_t<large_task_t>;
 		using root_allocator_t = typename task_allocator_t::root_allocator_t;
 
-		iris_async_worker_t() : internal_thread_count(0), priority_task_threshold(0), waiting_thread_count(0), limit_count(0) {
+		iris_async_worker_t() : internal_thread_count(0), priority_task_threshold(0), waiting_thread_count(0), limit_count(0), timed_waiters(0) {
 			proxy_get_current_thread_index = &iris_async_worker_t::get_current_thread_index_internal;
 			priority_task_handler = [](task_base_t*, size_t&) { return false; };
-			task_allocator_index.store(0, std::memory_order_relaxed);
 			running_count.store(0, std::memory_order_relaxed);
 			task_count.store(0, std::memory_order_relaxed);
 			terminated.store(1, std::memory_order_release);
+#if IRIS_ATOMIC_WAIT
+			wake_epoch.store(0, std::memory_order_relaxed);
+#endif
 		}
 
 		explicit iris_async_worker_t(size_t thread_count) : iris_async_worker_t() {
@@ -1239,11 +1247,25 @@ namespace iris {
 		// guard for exception on wait_for
 		struct waiting_guard_t {
 			waiting_guard_t(iris_async_worker_t* w) noexcept : worker(w) {
-				++worker->waiting_thread_count;
+				worker->waiting_thread_count.fetch_add(1, std::memory_order_release);
 			}
 
 			~waiting_guard_t() noexcept {
-				--worker->waiting_thread_count;
+				worker->waiting_thread_count.fetch_sub(1, std::memory_order_release);
+			}
+
+		private:
+			iris_async_worker_t* worker;
+		};
+
+		// guard for exception on wait_for (timed poll_one() sleeps on the legacy condvar)
+		struct timed_waiting_guard_t {
+			timed_waiting_guard_t(iris_async_worker_t* w) noexcept : worker(w) {
+				worker->timed_waiters.fetch_add(1, std::memory_order_release);
+			}
+
+			~timed_waiting_guard_t() noexcept {
+				worker->timed_waiters.fetch_sub(1, std::memory_order_release);
 			}
 
 		private:
@@ -1251,6 +1273,7 @@ namespace iris {
 		};
 
 		friend struct waiting_guard_t;
+		friend struct timed_waiting_guard_t;
 
 		// append new customized thread to worker
 		// must be called before start()
@@ -1287,6 +1310,7 @@ namespace iris {
 		template <typename duration_t>
 		bool poll_one(size_t priority, duration_t&& delay) {
 			if (!poll_one(priority)) {
+				timed_waiting_guard_t guard(this);
 				std::unique_lock<std::mutex> lock(mutex);
 				condition.wait_for(lock, std::forward<duration_t>(delay));
 				lock.unlock();
@@ -1346,7 +1370,8 @@ namespace iris {
 
 		template <typename callable_t>
 		typename std::enable_if<!is_large_task<typename std::remove_reference<callable_t>::type>::value, task_base_t*>::type new_task(callable_t&& func) {
-			size_t index = task_allocator_index.fetch_add(1, std::memory_order_relaxed) % sub_allocator_count;
+			static thread_local size_t allocator_spin = 0;
+			size_t index = (get_current_thread_index() + allocator_spin++) % sub_allocator_count;
 			task_allocator_t& current_allocator = task_allocators[index];
 			task_t<callable_t>* task = reinterpret_cast<task_t<callable_t>*>(current_allocator.allocate(1));
 			static_assert(sizeof(task_t<callable_t>) == sizeof(normal_task_t), "Task size mismatch!");
@@ -1486,7 +1511,7 @@ namespace iris {
 			}
 
 			IRIS_ASSERT(running_count.load(std::memory_order_acquire) == 0);
-			IRIS_ASSERT(waiting_thread_count == 0);
+			IRIS_ASSERT(waiting_thread_count.load(std::memory_order_acquire) == 0);
 			while (poll()) {}
 
 			task_heads.clear();
@@ -1519,26 +1544,90 @@ namespace iris {
 
 		// notify threads in thread pool, usually used for customized threads
 		void wakeup_one() {
+#if IRIS_ATOMIC_WAIT
+			// release bump pairs with the acquire load inside wait(): a waiter that
+			// observes the bumped epoch also observes every task pushed before it,
+			// and wait() re-checks the word under the kernel wait, so a bump/notify
+			// pair is never lost
+			wake_epoch.fetch_add(1, std::memory_order_release);
+			wake_epoch.notify_one();
+			if (timed_waiters.load(std::memory_order_acquire) != 0) {
+				std::lock_guard<std::mutex> lock(mutex);
+				condition.notify_all(); // timed poll_one() sleeps here (no deadline on atomic wait)
+			}
+#else
 			std::lock_guard<std::mutex> lock(mutex);
 			condition.notify_one();
+#endif
 		}
 
 		void wakeup_all() {
+#if IRIS_ATOMIC_WAIT
+			wake_epoch.fetch_add(1, std::memory_order_release);
+			wake_epoch.notify_all();
+			if (timed_waiters.load(std::memory_order_acquire) != 0) {
+				std::lock_guard<std::mutex> lock(mutex);
+				condition.notify_all();
+			}
+#else
 			std::lock_guard<std::mutex> lock(mutex);
 			condition.notify_all();
+#endif
 		}
 
 		// blocked delay for any task
 		void delay() {
 			if (!is_terminated()) {
-				std::unique_lock<std::mutex> lock(mutex);
 				waiting_guard_t guard(this);
 
-				if (fetch(waiting_thread_count).first == ~size_t(0)) {
+#if IRIS_ATOMIC_WAIT
+				// adaptive spin absorbs in-flight pushes before parking
+				static constexpr size_t delay_spin_rounds = 32;
+				static constexpr size_t delay_spin_pauses = 16;
+
+				for (size_t spins = 0; !is_terminated(); ) {
+					if (task_count.load(std::memory_order_acquire) != 0) {
+						if (fetch(waiting_thread_count.load(std::memory_order_relaxed)).first != ~size_t(0)) {
+							return;
+						}
+					}
+
+					if (spins < delay_spin_rounds) {
+						spins++;
+						for (size_t i = 0; i < delay_spin_pauses; i++) {
+							IRIS_CPU_PAUSE();
+						}
+
+						continue;
+					}
+
+					// park side of the Dekker pair: orders our registration store
+					std::atomic_thread_fence(std::memory_order_seq_cst);
+					if (fetch(waiting_thread_count.load(std::memory_order_relaxed)).first != ~size_t(0)) {
+						return;
+					}
+
+					size_t epoch = wake_epoch.load(std::memory_order_acquire);
+					if (is_terminated()) {
+						return;
+					}
+
+					if (fetch(waiting_thread_count.load(std::memory_order_relaxed)).first != ~size_t(0)) {
+						return;
+					}
+
+					wake_epoch.wait(epoch, std::memory_order_acquire);
+					spins = 0;
+				}
+#else
+				std::unique_lock<std::mutex> lock(mutex);
+
+				if (fetch(waiting_thread_count.load(std::memory_order_relaxed)).first == ~size_t(0)) {
 					if (!is_terminated()) {
 						condition.wait(lock);
 					}
 				}
+#endif
 			}
 		}
 
@@ -1558,7 +1647,12 @@ namespace iris {
 		}
 
 		void wakeup_one_with_priority(size_t priority) {
-			if (waiting_thread_count > priority + limit_count) {
+#if IRIS_ATOMIC_WAIT && !defined(__x86_64__) && !defined(_M_X64) && !defined(__i386__) && !defined(_M_IX86)
+			// consumer side of the Dekker pair (see delay()): on x86 the push CAS is a
+			// locked instruction and already orders the push before this gate load
+			std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
+			if (waiting_thread_count.load(std::memory_order_seq_cst) > priority + limit_count) {
 				wakeup_one();
 			}
 		}
@@ -1619,7 +1713,7 @@ namespace iris {
 							wakeup_one_with_priority(priority);
 						} else {
 							IRIS_ASSERT(!threads.empty());
-							if (waiting_thread_count > priority + limit_count) {
+							if (waiting_thread_count.load(std::memory_order_seq_cst) > priority + limit_count) {
 								if (fetch(priority_size).first != ~size_t(0)) {
 									wakeup_one_with_priority(priority);
 								}
@@ -1638,11 +1732,7 @@ namespace iris {
 		}
 
 	protected:
-		// --- read-mostly / immutable control block ---
-		// Established during construction/start() and afterwards only read on the hot
-		// paths (thread-index lookup, threads.size(), task_heads[] indexing, is_terminated()).
-		// Grouped together and kept off the mutated cache lines below so that frequent
-		// writes elsewhere never invalidate this line for the many readers.
+		// read-mostly / immutable control block
 		size_t& (*proxy_get_current_thread_index)();
 		std::vector<thread_t> threads; // worker
 		std::vector<std::atomic<task_base_t*>> task_heads; // task pointer list
@@ -1652,25 +1742,25 @@ namespace iris {
 		std::function<void(size_t)> thread_pinner; // optional core-pinning hook, invoked with the slot index at internal thread entry
 		std::atomic<size_t> terminated; // is to terminate
 
-		// --- hot, independently updated counters ---
-		// Each is hammered by every producer/worker thread and they are logically
-		// unrelated, so give each its own cache line to remove cross-counter false
-		// sharing. The worker is effectively a singleton, so this padding is paid at
-		// most once per pool.
-		alignas(default_cache_line_size) std::atomic<size_t> task_allocator_index; // index for selecting task allocator
+		// hot, independently updated counters
 		alignas(default_cache_line_size) std::atomic<size_t> running_count; // running_count
 		alignas(default_cache_line_size) std::atomic<size_t> task_count; // the count of total waiting tasks
 
-		// --- task allocators (sharded, written on every alloc/free) ---
+		// task allocators (sharded, written on every alloc/free)
 		// Started on a fresh cache line so allocator bookkeeping never collides with
 		// the counters above.
 		alignas(default_cache_line_size) large_task_allocator_t large_task_allocator;
 		task_allocator_t task_allocators[sub_allocator_count]; // default task allocator
 
-		// --- idle-wait slow path + fields mutated around the mutex ---
-		alignas(default_cache_line_size) std::mutex mutex; // mutex to protect condition
-		std::condition_variable condition; // condition variable for idle wait
-		size_t waiting_thread_count; // thread count of waiting on condition variable
+		// idle-wait slow path + fields mutated around the wake protocol
+#if IRIS_ATOMIC_WAIT
+		// futex-style park word: waiters sleep on wait(epoch), wakers bump + notify.
+		alignas(default_cache_line_size) std::atomic<size_t> wake_epoch;
+#endif
+		alignas(default_cache_line_size) std::mutex mutex; // legacy wake path; also the timed poll_one() deadline wait
+		std::condition_variable condition;
+		alignas(default_cache_line_size) std::atomic<size_t> waiting_thread_count; // threads registered in delay()
+		alignas(default_cache_line_size) std::atomic<size_t> timed_waiters; // threads sleeping in the timed poll_one()
 		size_t limit_count; // limit the count of concurrently running thread
 	};
 

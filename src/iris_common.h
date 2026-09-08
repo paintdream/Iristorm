@@ -71,6 +71,26 @@ SOFTWARE.
 #define IRIS_NT_STREAM 0
 #endif
 
+// spin-wait pause hint (reduces power/SMT-sibling contention in short busy waits).
+#ifndef IRIS_CPU_PAUSE
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <immintrin.h>
+#define IRIS_CPU_PAUSE() _mm_pause()
+#elif defined(__x86_64__) || defined(__i386__)
+#define IRIS_CPU_PAUSE() __builtin_ia32_pause()
+#elif defined(__aarch64__) || defined(__arm__) || defined(_M_ARM64) || defined(_M_ARM)
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define IRIS_CPU_PAUSE() __yield()
+#else
+#define IRIS_CPU_PAUSE() __builtin_arm_yield()
+#endif
+#else
+// no architecture hint available: keep the spin loop intact with a compiler barrier
+#define IRIS_CPU_PAUSE() std::atomic_signal_fence(std::memory_order_seq_cst)
+#endif
+#endif
+
 #ifndef IRIS_PROFILE_THREAD
 #define IRIS_PROFILE_THREAD(name, i)
 #endif

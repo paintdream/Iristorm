@@ -912,7 +912,10 @@ namespace iris {
 	template <typename warp_t, typename value_t = bool, typename async_worker_t = typename warp_t::async_worker_t>
 	struct iris_barrier_t : iris_sync_t<warp_t, async_worker_t> {
 		iris_barrier_t(async_worker_t& worker, size_t max_await_count_count, value_t init_value = value_t()) : iris_sync_t<warp_t, async_worker_t>(worker), max_await_count(max_await_count_count), value(init_value) {
-			handles.resize(max_await_count);
+			handles.resize(max_await_count.load(std::memory_order_relaxed));
+			// pre-reserve the dispatch snapshot so complete() performs no allocation
+			// on the steady-state path (see complete()'s lifetime contract)
+			snapshot.reserve(handles.size());
 			slot_count.store(0, std::memory_order_relaxed);
 			commit_count.store(0, std::memory_order_relaxed);
 			release_await_count.store(0, std::memory_order_release);
@@ -923,9 +926,10 @@ namespace iris {
 			IRIS_ASSERT(commit_count.load(std::memory_order_acquire) == 0);
 			IRIS_ASSERT(release_await_count.load(std::memory_order_acquire) == 0);
 
-			max_await_count = max_await_count_count;
+			max_await_count.store(max_await_count_count, std::memory_order_release);
 			value = init_value;
-			handles.resize(max_await_count);
+			handles.resize(max_await_count_count);
+			snapshot.reserve(handles.size());
 			slot_count.store(0, std::memory_order_relaxed);
 			commit_count.store(0, std::memory_order_relaxed);
 			release_await_count.store(0, std::memory_order_release);
@@ -955,11 +959,12 @@ namespace iris {
 		// to publish), and trigger complete() if we are the last one.
 		void release(size_t count = 1) noexcept {
 			release_await_count.fetch_add(count, std::memory_order_relaxed);
-			IRIS_ASSERT(max_await_count >= release_await_count.load(std::memory_order_relaxed));
+			IRIS_ASSERT(max_await_count.load(std::memory_order_acquire) >= release_await_count.load(std::memory_order_relaxed));
 			// commit_count uses acq_rel so that the thread eventually firing
 			// complete() acquires all preceding handles[] writes from peers.
 			size_t prev = commit_count.fetch_add(count, std::memory_order_acq_rel);
-			if (prev + count == max_await_count) {
+			size_t current_max = max_await_count.load(std::memory_order_acquire);
+			if (prev + count == current_max) {
 				complete();
 			}
 		}
@@ -969,7 +974,7 @@ namespace iris {
 			// assign indices, never to decide when to fire complete().  This
 			// way the index-allocating fetch_add can be relaxed.
 			size_t index = slot_count.fetch_add(1, std::memory_order_relaxed);
-			IRIS_ASSERT(index < max_await_count);
+			IRIS_ASSERT(index < max_await_count.load(std::memory_order_acquire));
 
 			if (handle) {
 				auto& info = handles[index];
@@ -984,9 +989,11 @@ namespace iris {
 			// complete().  The acq_rel fetch_add releases our handles[]
 			// store and acquires every other waiter's store, so the thread
 			// that observes commit_count == max_await_count is guaranteed
-			// to see *all* handles[] entries populated.
+			// to see *all* handles[] entries populated.  max_await_count is
+			// loaded atomically (see the member comment -- the trigger
+			// comparison must not race complete()'s shrink).
 			size_t prev = commit_count.fetch_add(1, std::memory_order_acq_rel);
-			if (prev + 1 == max_await_count) {
+			if (prev + 1 == max_await_count.load(std::memory_order_acquire)) {
 				complete();
 			}
 		}
@@ -1005,7 +1012,7 @@ namespace iris {
 		}
 
 		size_t get_max_await_count() const noexcept {
-			return max_await_count;
+			return max_await_count.load(std::memory_order_acquire);
 		}
 
 		size_t get_await_count() const noexcept {
@@ -1015,35 +1022,38 @@ namespace iris {
 	protected:
 		void complete() {
 			size_t old = commit_count.exchange(0, std::memory_order_release);
-			IRIS_ASSERT(old == max_await_count);
+			IRIS_ASSERT(old == max_await_count.load(std::memory_order_acquire));
 			slot_count.store(0, std::memory_order_relaxed);
 
-			// update max_await_count
-			IRIS_ASSERT(max_await_count >= release_await_count.load(std::memory_order_relaxed));
-			size_t last_max_await_count = max_await_count;
-			max_await_count -= release_await_count.exchange(0, std::memory_order_relaxed);
+			size_t last_max_await_count = max_await_count.load(std::memory_order_relaxed);
+			max_await_count.store(last_max_await_count - release_await_count.exchange(0, std::memory_order_relaxed), std::memory_order_release);
 
 			// notify all coroutines
 			if (callback) {
 				callback(*this);
 			}
 
+			snapshot.clear();
 			for (size_t i = 0; i < last_max_await_count; i++) {
-				auto info = std::move(handles[i]);
+				if (handles[i].handle != std::coroutine_handle<>()) {
+					snapshot.push_back(handles[i]);
+				}
 				handles[i].handle = std::coroutine_handle<>();
 				if constexpr (!std::is_same_v<warp_t, void>) {
 					handles[i].warp = nullptr;
 				}
-
-				if (info.handle != std::coroutine_handle<>()) {
-					iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(info));
-				}
 			}
+
+			for (auto&& info : snapshot) {
+				iris_sync_t<warp_t, async_worker_t>::dispatch(std::move(info));
+			}
+
+			snapshot.clear();
 		}
 
 	protected:
 		using info_t = typename iris_sync_t<warp_t, async_worker_t>::info_t;
-		size_t max_await_count;
+		std::atomic<size_t> max_await_count;
 		value_t value;
 		// slot_count: monotonically allocates indices into handles[]; reset on complete().
 		// commit_count: counts publications of handles[] (incl. release()-only); acq_rel
@@ -1051,6 +1061,7 @@ namespace iris {
 		std::atomic<size_t> slot_count;
 		std::atomic<size_t> commit_count;
 		std::vector<info_t> handles;
+		std::vector<info_t> snapshot;
 		std::function<void(iris_barrier_t&)> callback;
 		std::atomic<size_t> release_await_count;
 	};
