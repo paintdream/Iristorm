@@ -1310,9 +1310,25 @@ namespace iris {
 		template <typename duration_t>
 		bool poll_one(size_t priority, duration_t&& delay) {
 			if (!poll_one(priority)) {
+#if IRIS_ATOMIC_WAIT
+				// lost-wakeup guard: the waker only notifies the condvar when it
+				// observes timed_waiters != 0, so a bump occurring before our
+				// registration would go unnoticed. snapshot the epoch first and
+				// re-check it under the mutex after registering: any waker that
+				// missed our registration (its timed_waiters load precedes it)
+				// must have bumped the epoch before that load, hence before this
+				// re-check, and we skip the sleep and re-poll instead.
+				size_t epoch = wake_epoch.load(std::memory_order_acquire);
+#endif
 				timed_waiting_guard_t guard(this);
 				std::unique_lock<std::mutex> lock(mutex);
+#if IRIS_ATOMIC_WAIT
+				if (wake_epoch.load(std::memory_order_acquire) == epoch) {
+					condition.wait_for(lock, std::forward<duration_t>(delay));
+				}
+#else
 				condition.wait_for(lock, std::forward<duration_t>(delay));
+#endif
 				lock.unlock();
 
 				return poll_one(priority);

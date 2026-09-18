@@ -1742,6 +1742,9 @@ namespace iris {
 			this->set_pop_shadow(push_count);
 		}
 
+		// consumer-side check: with spsc optimize on, empty() refreshes the
+		// consumer-owned pop_cached_push shadow (see iris_spsc_shadow_t), so it
+		// must not be called concurrently from the producer side.
 		bool empty() const noexcept {
 			if (maybe_empty()) {
 				refresh_push_cached(); // loads push_count; no-op when the switch is off
