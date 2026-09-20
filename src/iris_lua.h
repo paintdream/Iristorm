@@ -3812,7 +3812,7 @@ namespace iris {
 								lua_pop(T, 1);
 
 								if (ptr != nullptr) {
-									reinterpret_cast<decltype(&view_construct_stub<void*>)>(ptr)(T, L, index, rawlen);
+									reinterpret_cast<decltype(&view_construct_stub<void*>)>(ptr)(T, L, absindex, rawlen);
 								} else {
 									lua_pushnil(T);
 								}
