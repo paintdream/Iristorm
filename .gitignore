@@ -30,3 +30,59 @@
 *.exe
 *.out
 *.app
+
+# Build directory
+build/
+
+# IDE
+.vs/
+
+# Shader cache
+app/demo/.shadercache/
+
+# Demo runtime output
+app/demo/imgui.ini
+app/demo/RenderGraphEditor.json
+app/demo/Asset/*.rgba
+app/demo/Asset/*.webp
+app/demo/diag.log
+app/demo/diag.out.log
+# Scene-streaming cooked blobs (procedural chunk persist store)
+app/demo/streaming/
+app/engine/imgui.ini
+app/engine/.shadercache/
+!app/engine/Extension/Build/
+
+# Sandbox snapshot runtime artifact
+app/sandbox/snapshot.bin
+# Gradle cache generated inside vendored OpenAL-soft support dir
+plugin/audio/ref/openal/fmt-11.0.2/support/.gradle/
+
+# Local diagnostic/build trees (untracked by policy)
+/debug/
+/build-ce/
+# app/engine editor session state (persisted last project/scene + recent list)
+app/engine/Projects/.session.txt
+app/engine/Projects/.recent.txt
+app/engine/Projects/test/
+app/engine/Projects/NewProject*/
+app/engine/Projects/TempScriptVerType/
+
+# CMake/build outputs (untracked build dirs and generated files)
+build*/
+build-review*/
+build11/
+build32/
+build64/
+buildxp/
+tutorial/*/build/
+tutorial/*/build64/
+tutorial/*/build64*/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.pdb
+
+# Crash dumps
+core.*
+iris_*_demo
